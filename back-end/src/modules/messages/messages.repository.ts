@@ -1,3 +1,4 @@
+import type { MessageRecord } from './messages.types';
 import { Injectable } from '@nestjs/common';
 
 /**
@@ -8,21 +9,24 @@ import { Injectable } from '@nestjs/common';
  */
 @Injectable()
 export class MessagesRepository {
-  private messages: any[] = [];
+  private messages: MessageRecord[] = [];
   private counter = 100;
 
   generateId(): string {
-    return 'msg_' + Date.now() + '_' + (this.counter++);
+    return 'msg_' + Date.now() + '_' + this.counter++;
   }
 
-  findAll(query?: { taskId?: string; userId?: string }): any[] {
+  findAll(query?: { taskId?: string; userId?: string }): MessageRecord[] {
     let result = this.messages;
-    if (query?.taskId) result = result.filter(m => m.taskId === query.taskId);
-    if (query?.userId) result = result.filter(m => m.senderId === query.userId || m.receiverId === query.userId);
+    if (query?.taskId) result = result.filter((m) => m.taskId === query.taskId);
+    if (query?.userId)
+      result = result.filter(
+        (m) => m.senderId === query.userId || m.receiverId === query.userId,
+      );
     return result;
   }
 
-  insert(message: any): any {
+  insert(message: MessageRecord): MessageRecord {
     this.messages.push(message);
     return message;
   }

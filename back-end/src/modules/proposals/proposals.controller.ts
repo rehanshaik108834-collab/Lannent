@@ -1,9 +1,12 @@
 import { Controller, Get, Post, Patch, Param, Body, Query, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiHeader, ApiQuery } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
 import { ProposalsService } from './proposals.service';
 import { CreateProposalDto } from './dto/create-proposal.dto';
 import { UpdateProposalDto } from './dto/update-proposal.dto';
 import { RoleGuard } from '../../common/guards/role.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { CurrentActor } from '../../common/decorators/current-actor.decorator';
+import type { Actor } from '../../common/decorators/current-actor.decorator';
 
 @ApiTags('Proposals')
 @Controller('proposals')
@@ -12,51 +15,62 @@ export class ProposalsController {
   constructor(private readonly proposalsService: ProposalsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Get all proposals (supports ?taskId=&workerId=&type= filters)' })
+  @ApiOperation({ summary: 'List proposals and invitations you are party to (supports ?taskId=&workerId=&type=)' })
   @ApiQuery({ name: 'taskId', required: false })
   @ApiQuery({ name: 'workerId', required: false })
   @ApiQuery({ name: 'type', required: false, enum: ['proposal', 'invitation'] })
   findAll(
+    @CurrentActor() actor: Actor,
     @Query('taskId') taskId?: string,
     @Query('workerId') workerId?: string,
     @Query('type') type?: string,
   ) {
-    return this.proposalsService.findAll({ taskId, workerId, type });
+    return this.proposalsService.findAllFor(actor, { taskId, workerId, type });
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get proposal by ID' })
-  findOne(@Param('id') id: string) {
-    return this.proposalsService.findById(id);
+  @ApiOperation({ summary: 'Get a proposal you are party to' })
+  findOne(@Param('id') id: string, @CurrentActor() actor: Actor) {
+    return this.proposalsService.findByIdFor(id, actor);
   }
 
   @Post()
-  @ApiOperation({ summary: 'Create a new proposal or invitation' })
-  create(@Body() dto: CreateProposalDto) {
-    return this.proposalsService.create(dto);
+  @ApiBearerAuth()
+  @Roles('worker', 'client')
+  @ApiOperation({ summary: 'Submit a proposal (worker) or invite a worker (owning client)' })
+  create(@Body() dto: CreateProposalDto, @CurrentActor() actor: Actor) {
+    return this.proposalsService.create(dto, actor);
   }
 
   @Patch(':id')
-  @ApiOperation({ summary: 'Update a proposal' })
-  update(@Param('id') id: string, @Body() dto: UpdateProposalDto) {
-    return this.proposalsService.update(id, dto);
+  @ApiBearerAuth()
+  @Roles('worker', 'client')
+  @ApiOperation({ summary: 'Withdraw your proposal (worker) or reject one / withdraw an invitation (client)' })
+  update(@Param('id') id: string, @Body() dto: UpdateProposalDto, @CurrentActor() actor: Actor) {
+    return this.proposalsService.update(id, dto, actor);
   }
 
   @Post(':id/hire')
-  @ApiOperation({ summary: 'Hire worker (rejects other proposals, locks escrow)' })
-  hire(@Param('id') id: string) {
-    return this.proposalsService.hireWorker(id);
+  @ApiBearerAuth()
+  @Roles('client')
+  @ApiOperation({ summary: 'Hire the worker behind a proposal (owning client; funds escrow)' })
+  hire(@Param('id') id: string, @CurrentActor() actor: Actor) {
+    return this.proposalsService.hireWorker(id, actor);
   }
 
   @Post(':id/accept')
-  @ApiOperation({ summary: 'Accept an invitation' })
-  accept(@Param('id') id: string) {
-    return this.proposalsService.acceptInvitation(id);
+  @ApiBearerAuth()
+  @Roles('worker')
+  @ApiOperation({ summary: "Accept your invitation (funds escrow from the client's wallet)" })
+  accept(@Param('id') id: string, @CurrentActor() actor: Actor) {
+    return this.proposalsService.acceptInvitation(id, actor);
   }
 
   @Post(':id/decline')
-  @ApiOperation({ summary: 'Decline an invitation' })
-  decline(@Param('id') id: string) {
-    return this.proposalsService.declineInvitation(id);
+  @ApiBearerAuth()
+  @Roles('worker')
+  @ApiOperation({ summary: 'Decline your invitation' })
+  decline(@Param('id') id: string, @CurrentActor() actor: Actor) {
+    return this.proposalsService.declineInvitation(id, actor);
   }
 }

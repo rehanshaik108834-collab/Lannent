@@ -10,17 +10,19 @@ export class CreateDisputeDto {
   @IsOptional() @IsString()
   milestoneId?: string;
 
-  @ApiProperty({ example: 'u1' })
-  @IsString()
-  raisedBy: string;
+  @ApiPropertyOptional({ example: 'u1' })
+  /** Optional and redundant: derived from the signed-in party. A mismatch is rejected. */
+  @IsOptional() @IsString()
+  raisedBy?: string;
 
   @ApiPropertyOptional({ example: 'James Client' })
   @IsOptional() @IsString()
   raisedByName?: string;
 
-  @ApiProperty({ example: 'u5' })
-  @IsString()
-  againstId: string;
+  @ApiPropertyOptional({ example: 'u5' })
+  /** Optional and redundant: derived from the signed-in party. A mismatch is rejected. */
+  @IsOptional() @IsString()
+  againstId?: string;
 
   @ApiPropertyOptional({ example: 'Sarah Johnson' })
   @IsOptional() @IsString()
@@ -30,7 +32,7 @@ export class CreateDisputeDto {
   @IsString()
   reason: string;
 
-  @ApiPropertyOptional({ example: '$500' })
+  @ApiPropertyOptional({ example: '₹500.00' })
   @IsOptional() @IsString()
   amount?: string;
 

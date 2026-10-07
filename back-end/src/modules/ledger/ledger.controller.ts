@@ -1,9 +1,12 @@
 import { Controller, Get, Param, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiHeader } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { LedgerService } from './ledger.service';
 import { RoleGuard } from '../../common/guards/role.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 
+import { TasksAccessService } from '../tasks/tasks-access.service';
+import { CurrentActor } from '../../common/decorators/current-actor.decorator';
+import type { Actor } from '../../common/decorators/current-actor.decorator';
 /**
  * Read-only view of escrow and platform revenue.
  *
@@ -14,10 +17,13 @@ import { Roles } from '../../common/decorators/roles.decorator';
 @Controller('ledger')
 @UseGuards(RoleGuard)
 export class LedgerController {
-  constructor(private readonly ledger: LedgerService) {}
+  constructor(
+    private readonly ledger: LedgerService,
+    private readonly tasks: TasksAccessService,
+  ) {}
 
   @Get('summary')
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
+  @ApiBearerAuth()
   // The authoritative financial state. The revenue desk needs it to reconcile
   // the model it owns — every /revenue figure is derived from these totals, so
   // granting the derived view while withholding the source would leave that
@@ -34,10 +40,21 @@ export class LedgerController {
   }
 
   @Get('escrow/:taskId')
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
-  @Roles('client', 'worker', 'expert', 'superuser', 'revenue-admin', 'intake-admin', 'compliance-admin')
-  @ApiOperation({ summary: 'Escrow held for one task' })
-  escrow(@Param('taskId') taskId: string) {
+  @ApiBearerAuth()
+  @Roles(
+    'client',
+    'worker',
+    'expert',
+    'superuser',
+    'revenue-admin',
+    'intake-admin',
+    'compliance-admin',
+  )
+  @ApiOperation({ summary: 'Escrow held for one project you may see' })
+  escrow(@Param('taskId') taskId: string, @CurrentActor() actor: Actor) {
+    // Same rule as reading the project itself: its parties, engaged reviewers
+    // and oversight. An open project holds nothing until someone is hired.
+    this.tasks.findByIdFor(taskId, actor);
     return this.ledger.getEscrow(taskId);
   }
 }

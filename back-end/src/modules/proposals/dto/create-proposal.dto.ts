@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsNumber, IsArray } from 'class-validator';
+import { IsString, IsOptional, IsNumber, IsArray, IsIn } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateProposalDto {
@@ -7,7 +7,8 @@ export class CreateProposalDto {
   taskId: string;
 
   @ApiProperty({ example: 'u5' })
-  @IsString()
+  /** The invited worker for an invitation; for a proposal it must be your own id (or omitted). */
+  @IsOptional() @IsString()
   workerId: string;
 
   @ApiPropertyOptional({ example: 'Sarah Johnson' })
@@ -67,6 +68,6 @@ export class CreateProposalDto {
   responseTime?: string;
 
   @ApiPropertyOptional({ example: 'proposal', enum: ['proposal', 'invitation'] })
-  @IsOptional() @IsString()
+  @IsOptional() @IsIn(['proposal', 'invitation'])
   type?: string;
 }

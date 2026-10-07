@@ -1,15 +1,34 @@
-import { ForbiddenException, Controller, Get, Post, Patch, Delete, Param, Body, Headers, Query, UseGuards, Inject, forwardRef } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiHeader, ApiQuery } from '@nestjs/swagger';
+import {
+  ForbiddenException,
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Delete,
+  Param,
+  Body,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiQuery,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { AccountDeletionGuard } from './account-deletion.guard';
 import { UsersService } from './users.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { CreateUserDto } from './dto/create-user.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
-import { LoginDto } from './dto/login.dto';
+import { UpdateUserDto, UpdateUserStatusDto } from './dto/update-user.dto';
 import { WalletDto } from './dto/wallet.dto';
 import { RoleGuard } from '../../common/guards/role.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { canMoveAnyWallet } from '../../common/guards/viewer.util';
+import { CurrentActor } from '../../common/decorators/current-actor.decorator';
+import type { Actor } from '../../common/decorators/current-actor.decorator';
+import { projectUserFor } from './users.projections';
 
 @ApiTags('Users')
 @Controller('users')
@@ -17,36 +36,42 @@ import { canMoveAnyWallet } from '../../common/guards/viewer.util';
 export class UsersController {
   constructor(
     private readonly usersService: UsersService,
-    @Inject(forwardRef(() => LedgerService)) private readonly ledger: LedgerService,
+    private readonly ledger: LedgerService,
   ) {}
 
-  @Post('login')
-  @Throttle({ default: { ttl: 60_000, limit: 10 } })
-  @ApiOperation({ summary: 'Login with email and password' })
-  login(@Body() dto: LoginDto) {
-    const { user, session } = this.usersService.login(dto.email, dto.password);
-    return { user: redact(user), session };
-  }
-
   @Get()
-  @ApiOperation({ summary: 'Get all users' })
-  @ApiQuery({ name: 'role', required: false, description: 'Filter by role (client, worker, expert, superuser)' })
-  findAll(@Query('role') role?: string) {
+  @ApiOperation({
+    summary: 'List users',
+    description:
+      'Other accounts appear as directory entries without email or balance.',
+  })
+  @ApiQuery({
+    name: 'role',
+    required: false,
+    description: 'Filter by role (client, worker, expert, superuser)',
+  })
+  findAll(@CurrentActor() actor: Actor, @Query('role') role?: string) {
     const all = this.usersService.findAll();
-    return redact(role ? all.filter(u => u.role === role) : all);
+    return (role ? all.filter((u) => u.role === role) : all).map((u) =>
+      projectUserFor(u, actor),
+    );
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get user by ID' })
-  findOne(@Param('id') id: string) {
-    return redact(this.usersService.findById(id));
+  @ApiOperation({
+    summary: 'Get a user (directory entry unless it is your own account)',
+  })
+  findOne(@Param('id') id: string, @CurrentActor() actor: Actor) {
+    return projectUserFor(this.usersService.findById(id), actor);
   }
 
   @Post('staff')
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
+  @ApiBearerAuth()
   @Roles('superuser')
-  @ApiOperation({ summary: 'Create any user type including staff/admin (superuser only)' })
+  @ApiOperation({
+    summary: 'Create any user type including staff/admin (superuser only)',
+  })
   createStaff(@Body() dto: CreateUserDto) {
     return redact(this.usersService.createPrivileged(dto));
   }
@@ -59,52 +84,85 @@ export class UsersController {
   }
 
   @Patch(':id')
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
-  @Roles('client', 'worker', 'expert', 'superuser')
-  @ApiOperation({ summary: 'Update user profile' })
-  update(@Param('id') id: string, @Body() dto: UpdateUserDto) {
-    return redact(this.usersService.update(id, dto));
+  @ApiBearerAuth()
+  @Roles(
+    'client',
+    'worker',
+    'expert',
+    'superuser',
+    'revenue-admin',
+    'intake-admin',
+    'compliance-admin',
+  )
+  @ApiOperation({
+    summary: 'Update your own profile',
+    description:
+      'Identity, status, balance and reputation fields are rejected if changed.',
+  })
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateUserDto,
+    @CurrentActor() actor: Actor,
+  ) {
+    return redact(this.usersService.updateProfile(id, dto, actor));
+  }
+
+  @Patch(':id/status')
+  @ApiBearerAuth()
+  @Roles('superuser')
+  @ApiOperation({ summary: 'Activate or suspend an account (operations only)' })
+  setStatus(
+    @Param('id') id: string,
+    @Body() dto: UpdateUserStatusDto,
+    @CurrentActor() actor: Actor,
+  ) {
+    return redact(this.usersService.setStatus(id, dto.status, actor));
   }
 
   @Delete(':id')
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
+  @UseGuards(AccountDeletionGuard)
+  @ApiBearerAuth()
   @Roles('superuser')
   @ApiOperation({ summary: 'Delete a user (superuser only)' })
-  remove(@Param('id') id: string) {
-    return this.usersService.delete(id);
+  remove(@Param('id') id: string, @CurrentActor() actor: Actor) {
+    return this.usersService.deleteAccount(id, actor);
   }
 
   @Post(':id/wallet/add')
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
+  @ApiBearerAuth()
   @Roles('client', 'worker', 'expert', 'superuser')
   @ApiOperation({
     summary: 'Deposit funds into a wallet (card processing fee applies)',
-    description: 'Charges the deposit processing fee and credits the net. Returns the fee breakdown.',
+    description:
+      'Charges the deposit processing fee and credits the net. Returns the fee breakdown.',
   })
-  addToWallet(@Param('id') id: string, @Body() dto: WalletDto, @Headers('user-id') actor: string, @Headers('role') role: string) {
-    assertOwnWallet(id, actor, role);
+  addToWallet(
+    @Param('id') id: string,
+    @Body() dto: WalletDto,
+    @CurrentActor() actor: Actor,
+  ) {
+    assertOwnWallet(id, actor);
     return this.ledger.deposit(id, dto.amount);
   }
 
-  @Post(':id/wallet/deduct')
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
-  // Workers and experts debit their own wallet when withdrawing.
-  @Roles('client', 'worker', 'expert', 'superuser')
-  @ApiOperation({ summary: 'Deduct funds from a wallet (no fee — internal transfer)' })
-  deductFromWallet(@Param('id') id: string, @Body() dto: WalletDto, @Headers('user-id') actor: string, @Headers('role') role: string) {
-    assertOwnWallet(id, actor, role);
-    return redact(this.usersService.deductFromWallet(id, dto.amount));
-  }
+  // There is deliberately no "deduct" route. Balances leave a wallet only
+  // through ledger operations (withdrawal, escrow funding), which record the
+  // matching transaction and fee.
 
   @Post(':id/wallet/withdraw')
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
+  @ApiBearerAuth()
   @Roles('client', 'worker', 'expert', 'superuser')
   @ApiOperation({
     summary: 'Withdraw to an external account (payout fee applies)',
-    description: 'Debits the full gross amount and returns the fee breakdown and net paid out.',
+    description:
+      'Debits the full gross amount and returns the fee breakdown and net paid out.',
   })
-  withdraw(@Param('id') id: string, @Body() dto: WalletDto, @Headers('user-id') actor: string, @Headers('role') role: string) {
-    assertOwnWallet(id, actor, role);
+  withdraw(
+    @Param('id') id: string,
+    @Body() dto: WalletDto,
+    @CurrentActor() actor: Actor,
+  ) {
+    assertOwnWallet(id, actor);
     return this.ledger.withdraw(id, dto.amount);
   }
 }
@@ -118,7 +176,7 @@ export class UsersController {
  * it, so handing them a copy would silently drop their writes.
  */
 function redact<T>(value: T): T {
-  if (Array.isArray(value)) return value.map(v => redact(v)) as unknown as T;
+  if (Array.isArray(value)) return value.map((v) => redact(v)) as unknown as T;
   if (value && typeof value === 'object') {
     const { password, ...safe } = value as any;
     return safe as T;
@@ -137,12 +195,11 @@ function redact<T>(value: T): T {
  * Authentication alone does not close this: a valid token for u2 still names
  * u5 in the path. The comparison has to happen here.
  */
-function assertOwnWallet(walletUserId: string, actorId?: string, role?: string) {
-  if (canMoveAnyWallet(role)) return;
-  if (!actorId) {
-    throw new ForbiddenException('Missing "user-id" header. A wallet operation must identify the account holder.');
-  }
-  if (actorId !== walletUserId) {
-    throw new ForbiddenException('You can only move money in and out of your own wallet.');
+function assertOwnWallet(walletUserId: string, actor: Actor) {
+  if (canMoveAnyWallet(actor.role)) return;
+  if (actor.id !== walletUserId) {
+    throw new ForbiddenException(
+      'You can only move money in and out of your own wallet.',
+    );
   }
 }

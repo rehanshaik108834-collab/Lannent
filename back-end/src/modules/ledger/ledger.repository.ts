@@ -18,6 +18,16 @@ export interface RevenueEntry {
   createdAt: string;
 }
 
+/** What a milestone release paid, kept so a repeated approval can report it. */
+export interface MilestoneRelease {
+  workerId: string;
+  /** Gross amount that left escrow. */
+  amount: number;
+  fee: number;
+  rate: number;
+  net: number;
+}
+
 export interface EscrowBalance {
   /** Held for milestone payments to the worker. */
   projectHeld: number;
@@ -36,7 +46,7 @@ export class LedgerRepository {
   private revenueEntries: RevenueEntry[] = [];
   /** `${clientId}:${workerId}` -> lifetime billings, drives the worker fee tier. */
   private billingsByPair: Record<string, number> = {};
-  private releasedMilestoneIds = new Set<string>();
+  private releasedMilestones = new Map<string, MilestoneRelease>();
   private paidAuditRequestIds = new Set<string>();
   private counter = 1;
 
@@ -75,7 +85,10 @@ export class LedgerRepository {
   /** Total value currently held across every task. */
   totalHeld(): number {
     return round2(
-      Object.values(this.escrowByTask).reduce((a, e) => a + e.projectHeld + e.auditHeld, 0),
+      Object.values(this.escrowByTask).reduce(
+        (a, e) => a + e.projectHeld + e.auditHeld,
+        0,
+      ),
     );
   }
 
@@ -115,10 +128,14 @@ export class LedgerRepository {
 
   // ── Idempotency guards ────────────────────────────────────────────────────
   isMilestoneReleased(id: string): boolean {
-    return this.releasedMilestoneIds.has(id);
+    return this.releasedMilestones.has(id);
   }
-  markMilestoneReleased(id: string): void {
-    this.releasedMilestoneIds.add(id);
+  getMilestoneRelease(id: string): MilestoneRelease | null {
+    const release = this.releasedMilestones.get(id);
+    return release ? { ...release } : null;
+  }
+  markMilestoneReleased(id: string, release: MilestoneRelease): void {
+    this.releasedMilestones.set(id, { ...release });
   }
   isAuditPaid(id: string): boolean {
     return this.paidAuditRequestIds.has(id);
@@ -136,13 +153,13 @@ export class LedgerRepository {
     this.escrowByTask = {};
     this.revenueEntries = [];
     this.billingsByPair = {};
-    this.releasedMilestoneIds = new Set();
+    this.releasedMilestones = new Map();
     this.paidAuditRequestIds = new Set();
 
     const clientOf: Record<string, string> = {};
     for (const t of SEED_TASKS) clientOf[t.id] = t.clientId;
 
-    for (const tx of SEED_TRANSACTIONS as any[]) {
+    for (const tx of SEED_TRANSACTIONS) {
       if (!tx.taskId) continue;
       // Release rows record the NET paid out; the GROSS is what left escrow.
       const gross = tx.grossAmount ?? tx.amount;
@@ -152,7 +169,16 @@ export class LedgerRepository {
         this.addProjectHeld(tx.taskId, -gross);
         const clientId = clientOf[tx.taskId];
         if (clientId) this.addBillings(clientId, tx.toId, gross);
-        if (tx.milestoneId) this.markMilestoneReleased(tx.milestoneId);
+        if (tx.milestoneId) {
+          const fee = tx.feeAmount || 0;
+          this.markMilestoneReleased(tx.milestoneId, {
+            workerId: tx.toId,
+            amount: gross,
+            fee,
+            rate: gross > 0 ? Math.round((fee / gross) * 1000) / 10 : 0,
+            net: tx.amount,
+          });
+        }
       } else if (tx.type === 'audit-escrow-lock') {
         this.addAuditHeld(tx.taskId, gross);
       } else if (tx.type === 'audit-release') {
@@ -163,9 +189,9 @@ export class LedgerRepository {
       // Seeded rows that recorded a fee represent commission the platform
       // actually took. Without this they leave escrow but appear nowhere in
       // revenue, so the distribution cannot balance.
-      if (tx.feeAmount > 0) {
+      if (tx.feeAmount !== undefined && tx.feeAmount > 0) {
         this.recordRevenue({
-          feeType: tx.feeType || 'worker-service',
+          feeType: (tx.feeType || 'worker-service') as FeeType,
           amount: tx.feeAmount,
           baseAmount: gross,
           rate: gross > 0 ? Math.round((tx.feeAmount / gross) * 1000) / 10 : 0,
@@ -173,7 +199,8 @@ export class LedgerRepository {
           taskId: tx.taskId || null,
           milestoneId: tx.milestoneId || null,
         });
-        this.revenueEntries[this.revenueEntries.length - 1].createdAt = tx.createdAt;
+        this.revenueEntries[this.revenueEntries.length - 1].createdAt =
+          tx.createdAt;
       }
     }
   }

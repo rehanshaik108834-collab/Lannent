@@ -1,19 +1,21 @@
-import { Module, NestModule, MiddlewareConsumer, RequestMethod } from '@nestjs/common';
+import { NotificationsCoreModule } from './notifications.core.module';
+import {
+  Module,
+  NestModule,
+  MiddlewareConsumer,
+  RequestMethod,
+} from '@nestjs/common';
 import { NotificationsController } from './notifications.controller';
-import { NotificationsService } from './notifications.service';
-import { NotificationsRepository } from './notifications.repository';
 
 import { RequireAuthMiddleware } from '../../common/middleware/require-auth.middleware';
 
 @Module({
+  imports: [NotificationsCoreModule],
   controllers: [NotificationsController],
-  providers: [NotificationsRepository, NotificationsService],
-  exports: [NotificationsService],
+  exports: [NotificationsCoreModule],
 })
 export class NotificationsModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer
-      .apply(RequireAuthMiddleware)
-      .forRoutes(NotificationsController);
+    consumer.apply(RequireAuthMiddleware).forRoutes(NotificationsController);
   }
 }

@@ -1,12 +1,14 @@
-import { IsString } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { IsIn, IsOptional, IsString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class UpdateExpertApplicationStatusDto {
   @ApiProperty({ example: 'approved', enum: ['approved', 'rejected'] })
-  @IsString()
-  status: string;
+  @IsIn(['approved', 'rejected'])
+  status: 'approved' | 'rejected';
 
-  @ApiProperty({ example: 'u4', description: 'ID of superuser reviewing the application' })
+  /** Optional and redundant: the reviewer is the signed-in intake admin. A mismatch is rejected. */
+  @ApiPropertyOptional({ example: 'u12' })
+  @IsOptional()
   @IsString()
-  reviewedBy: string;
+  reviewedBy?: string;
 }

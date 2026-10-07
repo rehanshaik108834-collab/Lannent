@@ -1,14 +1,40 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+} from '@nestjs/common';
+import { UnitOfWork } from '../../common/unit-of-work/unit-of-work';
+import { SETTLEMENT_STORES } from '../ledger/settlement-stores';
+import { TasksRepository } from '../tasks/tasks.repository';
+import { stripUnchangedProtectedFields } from '../../common/policies/protected-fields';
+import type { Actor } from '../../common/decorators/current-actor.decorator';
 import { CreateAuditRequestDto } from './dto/create-audit-request.dto';
 import { UpdateAuditRequestDto } from './dto/update-audit-request.dto';
-import { CreateOfferDto, AcceptAuditDto, DeclineAuditDto } from './dto/audit-offer.dto';
+import {
+  CreateOfferDto,
+  AcceptAuditDto,
+  DeclineAuditDto,
+} from './dto/audit-offer.dto';
+import type { AuditRequestRecord } from './audit-requests.types';
+import type { AuditStatus } from './audit-request.constants';
 import { AuditRequestsRepository } from './audit-requests.repository';
-import { AUDIT_STATUS, AUDIT_KIND, NEGOTIABLE, TERMINAL } from './audit-request.constants';
-import { canViewTask, assertCanViewTask, canViewAnyRecord } from '../../common/guards/viewer.util';
-import { TasksService } from '../tasks/tasks.service';
-import { MilestonesService } from '../milestones/milestones.service';
+import {
+  AUDIT_STATUS,
+  AUDIT_KIND,
+  NEGOTIABLE,
+  TERMINAL,
+} from './audit-request.constants';
+import {
+  canViewTask,
+  assertCanViewTask,
+  canViewAnyRecord,
+} from '../../common/guards/viewer.util';
+import { TasksAccessService } from '../tasks/tasks-access.service';
+import { MilestonesRepository } from '../milestones/milestones.repository';
 import { UsersService } from '../users/users.service';
-import { DisputesService } from '../disputes/disputes.service';
+import { DisputesRepository } from '../disputes/disputes.repository';
 import { LedgerService } from '../ledger/ledger.service';
 
 /**
@@ -22,31 +48,56 @@ import { LedgerService } from '../ledger/ledger.service';
 export class AuditRequestsService {
   constructor(
     private readonly auditRequestsRepository: AuditRequestsRepository,
-    @Inject(forwardRef(() => TasksService)) private tasks: TasksService,
-    @Inject(forwardRef(() => MilestonesService)) private milestones: MilestonesService,
-    @Inject(forwardRef(() => UsersService)) private users: UsersService,
-    @Inject(forwardRef(() => DisputesService)) private disputes: DisputesService,
-    @Inject(forwardRef(() => LedgerService)) private ledger: LedgerService,
+    private tasks: TasksAccessService,
+    private milestones: MilestonesRepository,
+    private users: UsersService,
+    private disputes: DisputesRepository,
+    private ledger: LedgerService,
+    private readonly uow: UnitOfWork,
   ) {}
 
-  findAll(query?: { expertId?: string; status?: string; taskId?: string; kind?: string },
-          viewer?: { id?: string; role?: string }) {
-    const all = this.auditRequestsRepository.findAll(query).map((ar: any) => this.withProgress(ar));
+  findAll(
+    query?: {
+      expertId?: string;
+      status?: string;
+      taskId?: string;
+      kind?: string;
+    },
+    viewer?: { id?: string; role?: string },
+  ) {
+    const all = this.auditRequestsRepository
+      .findAll(query)
+      .map((ar: any) => this.withProgress(ar));
     if (!viewer || canViewAnyRecord(viewer.role)) return all;
     // An engagement is only visible to its assigned reviewer and the parties to
     // the work. Previously every reviewer saw every project's audit.
     return all
       .filter((ar: any) =>
-        canViewTask(viewer.id, viewer.role, this.taskOf(ar), ar.expertId, ar.clientId, ar.workerId),
+        canViewTask(
+          viewer.id,
+          viewer.role,
+          this.taskOf(ar),
+          ar.expertId,
+          ar.clientId,
+          ar.workerId,
+        ),
       )
       .map((ar: any) => this.withProgress(ar));
   }
 
   findById(id: string, viewer?: { id?: string; role?: string }) {
     const ar = this.auditRequestsRepository.findById(id);
-    if (!ar) throw new NotFoundException(`Audit request with id "${id}" not found`);
+    if (!ar)
+      throw new NotFoundException(`Audit request with id "${id}" not found`);
     if (viewer) {
-      assertCanViewTask(viewer.id, viewer.role, this.taskOf(ar), ar.expertId, ar.clientId, ar.workerId);
+      assertCanViewTask(
+        viewer.id,
+        viewer.role,
+        this.taskOf(ar),
+        ar.expertId,
+        ar.clientId,
+        ar.workerId,
+      );
     }
     return this.withProgress(ar);
   }
@@ -56,16 +107,16 @@ export class AuditRequestsService {
     return ar?.taskId ? this.safe(() => this.tasks.findById(ar.taskId)) : null;
   }
 
-  create(dto: CreateAuditRequestDto) {
+  create(dto: CreateAuditRequestDto & { clientId: string }) {
     const { openingOffer, ...rest } = dto;
     // Spread the payload FIRST, then apply defaults. The reverse order — which
     // this codebase uses widely — lets a key that is present but undefined
     // clobber its own default, producing an engagement with no status at all.
-    const ar = {
+    const ar: AuditRequestRecord = {
       ...rest,
       id: this.auditRequestsRepository.generateId(),
       kind: dto.kind || AUDIT_KIND.PROJECT,
-      status: dto.status || AUDIT_STATUS.PREVIEW_SENT,
+      status: (dto.status || AUDIT_STATUS.PREVIEW_SENT) as AuditStatus,
       severity: dto.severity || 'Medium',
       createdAt: new Date().toISOString().slice(0, 10),
       expertId: dto.expertId || null,
@@ -73,7 +124,7 @@ export class AuditRequestsService {
       milestoneId: dto.milestoneId || null,
       workerId: dto.workerId || null,
       agreedAmount: null as number | null,
-      offers: [] as any[],
+      offers: [],
       // Which milestones this engagement has already reported on. An audit is
       // per-milestone even though the engagement is per-project, so this is
       // what stops a milestone being audited twice and what decides when the
@@ -85,14 +136,19 @@ export class AuditRequestsService {
 
     // A client can open with a price so experts see a number in their queue.
     if (openingOffer) {
-      this.addOffer(ar.id, { amount: openingOffer, offeredBy: 'client', note: 'Opening offer' });
+      this.addOffer(ar.id, {
+        amount: openingOffer,
+        offeredBy: 'client',
+        note: 'Opening offer',
+      });
     }
-    return this.auditRequestsRepository.findById(ar.id);
+    return this.auditRequestsRepository.findById(ar.id)!;
   }
 
   update(id: string, dto: UpdateAuditRequestDto) {
     const updated = this.auditRequestsRepository.update(id, dto);
-    if (!updated) throw new NotFoundException(`Audit request with id "${id}" not found`);
+    if (!updated)
+      throw new NotFoundException(`Audit request with id "${id}" not found`);
     return updated;
   }
 
@@ -105,31 +161,73 @@ export class AuditRequestsService {
     const ar = this.findById(id, viewer);
     const task = this.safe(() => this.tasks.findById(ar.taskId));
     const client = this.safe(() => this.users.findById(ar.clientId));
-    const worker = ar.workerId ? this.safe(() => this.users.findById(ar.workerId)) : null;
-    const milestones = ar.taskId ? this.safe(() => this.milestones.findAll({ taskId: ar.taskId })) || [] : [];
-    const dispute = ar.disputeId ? this.safe(() => this.disputes.findById(ar.disputeId)) : null;
-    const focus = ar.milestoneId ? milestones.find((m: any) => m.id === ar.milestoneId) : null;
+    const worker = ar.workerId
+      ? this.safe(() => this.users.findById(ar.workerId))
+      : null;
+    const milestones = ar.taskId
+      ? this.safe(() => this.milestones.findAll({ taskId: ar.taskId })) || []
+      : [];
+    const dispute = ar.disputeId
+      ? this.safe(() => this.disputes.findById(ar.disputeId))
+      : null;
+    const focus = ar.milestoneId
+      ? milestones.find((m: any) => m.id === ar.milestoneId)
+      : null;
 
     return {
       auditRequest: ar,
       kind: ar.kind,
       project: task
         ? {
-            id: task.id, title: task.title, description: task.description,
-            category: task.category, budget: task.budget, currency: task.currency,
-            deadline: task.deadline, skills: task.skills, status: task.status,
+            id: task.id,
+            title: task.title,
+            description: task.description,
+            category: task.category,
+            budget: task.budget,
+            currency: task.currency,
+            deadline: task.deadline,
+            skills: task.skills,
+            status: task.status,
             progress: task.progress,
           }
         : null,
-      client: client ? { id: client.id, name: client.name, company: client.company, avatar: client.avatar, avatarColor: client.avatarColor } : null,
-      worker: worker ? { id: worker.id, name: worker.name, rating: worker.rating, skills: worker.skills, avatar: worker.avatar, avatarColor: worker.avatarColor } : null,
+      client: client
+        ? {
+            id: client.id,
+            name: client.name,
+            company: client.company,
+            avatar: client.avatar,
+            avatarColor: client.avatarColor,
+          }
+        : null,
+      worker: worker
+        ? {
+            id: worker.id,
+            name: worker.name,
+            rating: worker.rating,
+            skills: worker.skills,
+            avatar: worker.avatar,
+            avatarColor: worker.avatarColor,
+          }
+        : null,
       milestones: milestones.map((m: any) => ({
-        id: m.id, title: m.title, description: m.description, budget: m.budget,
-        status: m.status, deliverable: m.deliverable,
+        id: m.id,
+        title: m.title,
+        description: m.description,
+        budget: m.budget,
+        status: m.status,
+        deliverable: m.deliverable,
       })),
       focusMilestone: focus || null,
       dispute: dispute
-        ? { id: dispute.id, reason: dispute.reason, raisedByName: dispute.raisedByName, againstName: dispute.againstName, amount: dispute.amount, status: dispute.status }
+        ? {
+            id: dispute.id,
+            reason: dispute.reason,
+            raisedByName: dispute.raisedByName,
+            againstName: dispute.againstName,
+            amount: dispute.amount,
+            status: dispute.status,
+          }
         : null,
       offers: ar.offers || [],
       agreedAmount: ar.agreedAmount,
@@ -165,12 +263,19 @@ export class AuditRequestsService {
     this.assertNegotiable(ar);
 
     const offer = (ar.offers || []).find((o: any) => o.id === offerId);
-    if (!offer) throw new NotFoundException(`Offer "${offerId}" not found on this audit request.`);
+    if (!offer)
+      throw new NotFoundException(
+        `Offer "${offerId}" not found on this audit request.`,
+      );
     if (offer.status !== 'pending') {
-      throw new BadRequestException(`That offer is no longer open (status: ${offer.status}).`);
+      throw new BadRequestException(
+        `That offer is no longer open (status: ${offer.status}).`,
+      );
     }
     if (offer.offeredBy === acceptedBy) {
-      throw new BadRequestException('You cannot accept your own offer — wait for the other side.');
+      throw new BadRequestException(
+        'You cannot accept your own offer — wait for the other side.',
+      );
     }
 
     offer.status = 'accepted';
@@ -187,9 +292,15 @@ export class AuditRequestsService {
         `Escrow can only be funded once a fee is agreed (current status: ${ar.status}).`,
       );
     }
-    if (!ar.agreedAmount) throw new BadRequestException('No agreed amount to fund.');
+    if (!ar.agreedAmount)
+      throw new BadRequestException('No agreed amount to fund.');
 
-    this.ledger.fundAuditEscrow(ar.taskId, ar.clientId, ar.agreedAmount, 'technical audit');
+    this.ledger.fundAuditEscrow(
+      ar.taskId,
+      ar.clientId,
+      ar.agreedAmount,
+      'technical audit',
+    );
     ar.status = AUDIT_STATUS.ESCROW_FUNDED;
     return this.auditRequestsRepository.update(id, ar);
   }
@@ -199,18 +310,20 @@ export class AuditRequestsService {
    * project from draft — the client's project only goes live once an expert has
    * committed and the fee is in escrow.
    */
-  accept(id: string, dto: AcceptAuditDto) {
+  accept(id: string, dto: { expertId: string }) {
     const ar = this.findById(id);
     if (ar.status !== AUDIT_STATUS.ESCROW_FUNDED) {
       throw new BadRequestException(
         `An audit can only be accepted once its fee is in escrow (current status: ${ar.status}).`,
       );
     }
-    // The payee comes from the request body, so it has to be checked.
-    this.assertAssignableExpert(dto.expertId);
+    // The payee must be an eligible reviewer for this project's category.
+    this.assertAssignableExpert(dto.expertId, ar.category);
     // The reviewer accepting must be the one the client assigned.
     if (ar.expertId && ar.expertId !== dto.expertId) {
-      throw new BadRequestException('This audit is assigned to a different Expert Reviewer.');
+      throw new BadRequestException(
+        'This audit is assigned to a different Expert Reviewer.',
+      );
     }
 
     ar.expertId = dto.expertId;
@@ -223,17 +336,40 @@ export class AuditRequestsService {
     return this.auditRequestsRepository.findById(id);
   }
 
+  /**
+   * The reviewer withdraws. If the client had already funded the fee and it
+   * was never paid out, it goes back to the client in the same unit of work —
+   * otherwise it would sit in audit escrow with no engagement to release it.
+   * The client can then choose another reviewer.
+   */
   decline(id: string, dto: DeclineAuditDto) {
     const ar = this.findById(id);
     if (TERMINAL.includes(ar.status)) {
       throw new BadRequestException(`This audit is already ${ar.status}.`);
     }
-    ar.status = AUDIT_STATUS.DECLINED;
-    ar.declineReason = dto.reason || null;
-    // Release the assignment so the client can pick someone else.
-    ar.declinedBy = ar.expertId;
-    ar.expertId = null;
-    return this.auditRequestsRepository.update(id, ar);
+    const fundedStatuses: string[] = [
+      AUDIT_STATUS.ESCROW_FUNDED,
+      AUDIT_STATUS.IN_PROGRESS,
+      AUDIT_STATUS.REPORT_SUBMITTED,
+    ];
+    const funded = fundedStatuses.includes(ar.status);
+    return this.uow.run([AuditRequestsRepository, ...SETTLEMENT_STORES], () => {
+      if (funded && !ar.feePaid && ar.agreedAmount) {
+        this.ledger.refundAuditEscrow({
+          taskId: ar.taskId,
+          clientId: ar.clientId,
+          amount: ar.agreedAmount,
+          reason: 'Reviewer declined the audit',
+        });
+      }
+      return this.auditRequestsRepository.update(id, {
+        status: AUDIT_STATUS.DECLINED,
+        declineReason: dto.reason || undefined,
+        // Release the assignment so the client can pick someone else.
+        declinedBy: ar.expertId ?? undefined,
+        expertId: null,
+      } as Partial<AuditRequestRecord>);
+    });
   }
 
   /**
@@ -250,7 +386,8 @@ export class AuditRequestsService {
    */
   settle(id: string, milestoneId?: string) {
     const ar = this.auditRequestsRepository.findById(id);
-    if (!ar) throw new NotFoundException(`Audit request with id "${id}" not found`);
+    if (!ar)
+      throw new NotFoundException(`Audit request with id "${id}" not found`);
 
     const fileable = [
       AUDIT_STATUS.IN_PROGRESS,
@@ -267,11 +404,14 @@ export class AuditRequestsService {
     // Record coverage before deciding whether the engagement is finished.
     this.recordMilestoneAudited(id, milestoneId);
     const fresh = this.auditRequestsRepository.findById(id);
+    if (!fresh)
+      throw new NotFoundException(`Audit request with id "${id}" not found`);
 
     const progress = this.auditProgress(fresh);
     // A dispute audit covers the one claim it was raised for, so it finishes
     // with its report. A project audit finishes only when nothing is left.
-    const finished = fresh.kind !== AUDIT_KIND.PROJECT || !progress || progress.complete;
+    const finished =
+      fresh.kind !== AUDIT_KIND.PROJECT || !progress || progress.complete;
 
     if (!finished) {
       // The fee stays in escrow. It buys the whole project audit, so paying it
@@ -282,10 +422,13 @@ export class AuditRequestsService {
         status: AUDIT_STATUS.IN_PROGRESS,
       });
       return {
-        auditRequest: this.withProgress(this.auditRequestsRepository.findById(id)),
+        auditRequest: this.withProgress(
+          this.auditRequestsRepository.findById(id),
+        ),
         payout: {
           pending: true,
-          reason: 'The audit fee is released once every milestone has a report.',
+          reason:
+            'The audit fee is released once every milestone has a report.',
           audited: progress.audited,
           total: progress.total,
           remaining: progress.pendingMilestoneIds,
@@ -293,6 +436,11 @@ export class AuditRequestsService {
       };
     }
 
+    if (!fresh.expertId || fresh.agreedAmount === null)
+      throw new BadRequestException(
+        'Audit payout requires an assigned reviewer and agreed fee.',
+      );
+    const expertId = fresh.expertId;
     const firstPayout = !fresh.feePaid;
     const payout = this.ledger.releaseAuditFee({
       auditRequestId: fresh.id,
@@ -308,12 +456,19 @@ export class AuditRequestsService {
     // Credit the expert's review count — once per engagement, not per report.
     if (firstPayout) {
       this.safe(() => {
-        const expert = this.users.findById(fresh.expertId);
-        this.users.update(fresh.expertId, { reviewsDone: (expert?.reviewsDone || 0) + 1 });
+        const expert = this.users.findById(expertId);
+        this.users.update(expertId, {
+          reviewsDone: (expert?.reviewsDone || 0) + 1,
+        });
       });
     }
 
-    return { auditRequest: this.withProgress(this.auditRequestsRepository.findById(id)), payout };
+    return {
+      auditRequest: this.withProgress(
+        this.auditRequestsRepository.findById(id),
+      ),
+      payout,
+    };
   }
 
   // ── Per-milestone audit progress ──────────────────────────────────────────
@@ -334,7 +489,9 @@ export class AuditRequestsService {
       : [];
     const audited: string[] = ar.auditedMilestoneIds || [];
 
-    const auditedIds = milestones.filter((m: any) => audited.includes(m.id)).map((m: any) => m.id);
+    const auditedIds = milestones
+      .filter((m: any) => audited.includes(m.id))
+      .map((m: any) => m.id);
     const pending = milestones.filter((m: any) => !audited.includes(m.id));
     // Submitted and waiting on the reviewer, versus not yet handed over at all.
     const awaitingReview = pending.filter((m: any) =>
@@ -391,10 +548,15 @@ export class AuditRequestsService {
   activeProjectAudit(taskId: string) {
     const candidates = this.auditRequestsRepository
       .findAll({ taskId, kind: AUDIT_KIND.PROJECT })
-      .filter((a: any) => ![AUDIT_STATUS.DECLINED, AUDIT_STATUS.CANCELLED].includes(a.status));
+      .filter(
+        (a: any) =>
+          ![AUDIT_STATUS.DECLINED, AUDIT_STATUS.CANCELLED].includes(a.status),
+      );
     // An engagement an expert has actually taken on comes first.
     return (
-      candidates.find((a: any) => a.expertId && !this.auditProgress(a)?.complete) ||
+      candidates.find(
+        (a: any) => a.expertId && !this.auditProgress(a)?.complete,
+      ) ||
       candidates.find((a: any) => a.expertId) ||
       null
     );
@@ -407,12 +569,23 @@ export class AuditRequestsService {
    */
   assertAssignableExpert(expertId: string, category?: string) {
     const expert = this.safe(() => this.users.findById(expertId));
-    if (!expert) throw new BadRequestException(`No user found with id "${expertId}".`);
-    if (expert.role !== 'expert') throw new BadRequestException(`${expert.name} is not an Expert Reviewer.`);
-    if (expert.status !== 'active') throw new BadRequestException(`${expert.name}'s account is not active.`);
-    if (category && Array.isArray(expert.domains) && expert.domains.length
-        && !expert.domains.includes(category)) {
-      throw new BadRequestException(`${expert.name} does not review ${category} work.`);
+    if (!expert)
+      throw new BadRequestException(`No user found with id "${expertId}".`);
+    if (expert.role !== 'expert')
+      throw new BadRequestException(
+        `${expert.name} is not an Expert Reviewer.`,
+      );
+    if (expert.status !== 'active')
+      throw new BadRequestException(`${expert.name}'s account is not active.`);
+    if (
+      category &&
+      Array.isArray(expert.domains) &&
+      expert.domains.length &&
+      !expert.domains.includes(category)
+    ) {
+      throw new BadRequestException(
+        `${expert.name} does not review ${category} work.`,
+      );
     }
     return expert;
   }
@@ -427,7 +600,146 @@ export class AuditRequestsService {
 
   /** Cross-module reads are best-effort — a missing task must not break a preview. */
   private safe<T>(fn: () => T): T | null {
-    try { return fn(); } catch { return null; }
+    try {
+      return fn();
+    } catch {
+      return null;
+    }
+  }
+
+  // ── Actor-checked operations (HTTP) ──────────────────────────────────────
+  //
+  // The methods above are the transitions; these decide who may trigger them.
+  // The client side of an engagement is the project's client, the expert side
+  // is the assigned reviewer. Operations cannot act for either.
+
+  /** Which side of the engagement the actor is on, if any. */
+  private sideOf(ar: any, actor: Actor): 'client' | 'expert' | null {
+    if (actor.id === ar.clientId) return 'client';
+    if (ar.expertId && actor.id === ar.expertId) return 'expert';
+    return null;
+  }
+
+  private requireSide(ar: any, actor: Actor): 'client' | 'expert' {
+    const side = this.sideOf(ar, actor);
+    if (!side)
+      throw new ForbiddenException(
+        "Only the project's client and the assigned reviewer can act on this audit.",
+      );
+    return side;
+  }
+
+  /** A client opens a technical audit on their own project. Dispute audits are opened by disputes. */
+  createFor(dto: CreateAuditRequestDto, actor: Actor) {
+    const task = this.tasks.findById(dto.taskId);
+    if (task.clientId !== actor.id) {
+      throw new ForbiddenException(
+        'Only the client who owns this project can request an audit of it.',
+      );
+    }
+    if (dto.clientId && dto.clientId !== actor.id) {
+      throw new BadRequestException('clientId must be your own account.');
+    }
+    const active = this.auditRequestsRepository
+      .findAll({ taskId: task.id, kind: AUDIT_KIND.PROJECT })
+      .find((a) => !TERMINAL.includes(a.status));
+    if (active) {
+      throw new ConflictException(
+        'This project already has an active technical audit. A new reviewer can be chosen once it is declined or cancelled.',
+      );
+    }
+    if (dto.kind && dto.kind !== AUDIT_KIND.PROJECT) {
+      throw new BadRequestException(
+        'Dispute audits are opened by raising a dispute.',
+      );
+    }
+    return this.create({
+      ...dto,
+      kind: AUDIT_KIND.PROJECT,
+      clientId: actor.id,
+      status: undefined,
+      disputeId: undefined,
+      workerId: task.workerId || undefined,
+      category: task.category,
+    });
+  }
+
+  addOfferFor(id: string, dto: CreateOfferDto, actor: Actor) {
+    const side = this.requireSide(this.findById(id), actor);
+    if (dto.offeredBy && dto.offeredBy !== side) {
+      throw new BadRequestException(
+        `You are the ${side} on this audit; offeredBy must be "${side}".`,
+      );
+    }
+    return this.addOffer(id, { ...dto, offeredBy: side });
+  }
+
+  acceptOfferFor(id: string, offerId: string, actor: Actor) {
+    const side = this.requireSide(this.findById(id), actor);
+    return this.acceptOffer(id, offerId, side);
+  }
+
+  /** The project's client pays the agreed fee into audit escrow. */
+  fundFor(id: string, actor: Actor) {
+    const ar = this.findById(id);
+    if (actor.id !== ar.clientId) {
+      throw new ForbiddenException(
+        "Only the project's client can fund this audit.",
+      );
+    }
+    return this.uow.run([AuditRequestsRepository, ...SETTLEMENT_STORES], () =>
+      this.fund(id),
+    );
+  }
+
+  /**
+   * The reviewer takes the engagement. The payee is the actor: an engagement
+   * assigned to someone else cannot be taken, and an unassigned one is taken
+   * only by an eligible reviewer.
+   */
+  acceptFor(id: string, dto: AcceptAuditDto, actor: Actor) {
+    const ar = this.findById(id);
+    if (dto.expertId && dto.expertId !== actor.id) {
+      throw new BadRequestException('expertId must be your own account.');
+    }
+    if (ar.expertId && ar.expertId !== actor.id) {
+      throw new ForbiddenException(
+        'This audit is assigned to a different Expert Reviewer.',
+      );
+    }
+    return this.uow.run([AuditRequestsRepository, TasksRepository], () =>
+      this.accept(id, { expertId: actor.id }),
+    );
+  }
+
+  declineFor(id: string, dto: DeclineAuditDto, actor: Actor) {
+    const ar = this.findById(id);
+    if (!ar.expertId || ar.expertId !== actor.id) {
+      throw new ForbiddenException(
+        'Only the assigned reviewer can decline this audit.',
+      );
+    }
+    return this.decline(id, dto);
+  }
+
+  /**
+   * Either side edits descriptive fields. The reviewer, the covered
+   * milestone, the parties and the fee change only through their own steps.
+   */
+  updateFor(id: string, dto: UpdateAuditRequestDto, actor: Actor) {
+    const ar = this.findById(id);
+    this.requireSide(ar, actor);
+    const editable = ['severity', 'dueDate', 'project', 'milestone', 'worker'];
+    const locked = Object.keys(dto).filter(
+      (field) => !editable.includes(field),
+    );
+    const changes = stripUnchangedProtectedFields(
+      dto,
+      ar,
+      locked,
+      (field) => `"${field}" cannot be changed by editing the audit.`,
+    );
+    return this.update(id, changes as UpdateAuditRequestDto);
   }
 
   resetToSeed() {

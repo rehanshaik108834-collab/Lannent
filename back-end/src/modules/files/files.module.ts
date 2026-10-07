@@ -1,18 +1,19 @@
-import { Module, forwardRef, NestModule, MiddlewareConsumer, RequestMethod } from '@nestjs/common';
+import { FilesCoreModule } from './files.core.module';
+import {
+  Module,
+  NestModule,
+  MiddlewareConsumer,
+  RequestMethod,
+} from '@nestjs/common';
 import { FilesController } from './files.controller';
-import { FilesService } from './files.service';
-import { FilesRepository } from './files.repository';
-import { TasksModule } from '../tasks/tasks.module';
-import { AuditRequestsModule } from '../audit-requests/audit-requests.module';
 
 import { RequireAuthMiddleware } from '../../common/middleware/require-auth.middleware';
 import { UploadGuardMiddleware } from '../../common/middleware/upload-guard.middleware';
 
 @Module({
-  imports: [forwardRef(() => TasksModule), forwardRef(() => AuditRequestsModule)],
+  imports: [FilesCoreModule],
   controllers: [FilesController],
-  providers: [FilesService, FilesRepository],
-  exports: [FilesService],
+  exports: [FilesCoreModule],
 })
 export class FilesModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {

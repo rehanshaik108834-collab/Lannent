@@ -1,6 +1,7 @@
-import { Injectable, Inject, forwardRef } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { UsersService } from '../users/users.service';
+import { ALL_ROLES } from '../../common/constants/roles';
 import { JWT_EXPIRES_IN } from '../../common/security/jwt.config';
 
 export interface TokenClaims {
@@ -13,7 +14,7 @@ export interface TokenClaims {
 export class AuthService {
   constructor(
     private readonly jwt: JwtService,
-    @Inject(forwardRef(() => UsersService)) private readonly users: UsersService,
+    private readonly users: UsersService,
   ) {}
 
   /**
@@ -24,7 +25,11 @@ export class AuthService {
    */
   login(email: string, password: string) {
     const { user, session } = this.users.login(email, password);
-    const claims: TokenClaims = { sub: user.id, role: user.role, email: user.email };
+    const claims: TokenClaims = {
+      sub: user.id,
+      role: user.role,
+      email: user.email,
+    };
     const { password: _omit, ...safeUser } = user;
 
     return {
@@ -38,7 +43,13 @@ export class AuthService {
   /** Verifies a token, returning its claims or null. Never throws. */
   verify(token: string): TokenClaims | null {
     try {
-      return this.jwt.verify<TokenClaims>(token);
+      const claims = this.jwt.verify<TokenClaims>(token);
+      if (typeof claims.sub !== 'string' || !claims.sub) return null;
+      const user = this.users.findById(claims.sub);
+      if (!user || user.status !== 'active' || !ALL_ROLES.includes(user.role))
+        return null;
+      // Account changes take effect immediately, without waiting for token expiry.
+      return { sub: user.id, role: user.role, email: user.email };
     } catch {
       return null;
     }
@@ -49,7 +60,7 @@ export class AuthService {
     const claims = this.verify(token);
     if (!claims) return { valid: false, user: null };
     const user = this.users.findById(claims.sub);
-    const { password: _omit, ...safeUser } = user || ({} as any);
+    const { password: _omit, ...safeUser } = user;
     return { valid: true, user: user ? safeUser : null };
   }
 }

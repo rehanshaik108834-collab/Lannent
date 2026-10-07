@@ -1,0 +1,22 @@
+export type ProposalRecord = {
+  id: string;
+  taskId: string;
+  workerId: string;
+  createdAt: string;
+  status: string;
+  type: string;
+  workerName?: string;
+  avatar?: string;
+  avatarColor?: string;
+  rating?: number;
+  reviewCount?: number;
+  location?: string;
+  bidPrice?: string;
+  timeline?: string;
+  coverLetter?: string;
+  skills?: string[];
+  completedProjects?: number;
+  successRate?: number;
+  hourlyRate?: string;
+  responseTime?: string;
+};

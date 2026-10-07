@@ -1,0 +1,30 @@
+.board {
+  display: grid;
+  /* As many columns as fit beside the portal sidebar; one per row on phones. */
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.column {
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--secondary);
+}
+.column h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+.column li {
+  background: white;
+}
+.deliverable {
+  display: grid;
+  gap: 10px;
+}
+.deliverable dt {
+  font-weight: 600;
+}
+.deliverable dd {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}

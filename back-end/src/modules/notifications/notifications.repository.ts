@@ -1,3 +1,4 @@
+import type { NotificationRecord } from './notifications.types';
 import { Injectable } from '@nestjs/common';
 import { SEED_NOTIFICATIONS } from '../seed/seed.data';
 
@@ -9,26 +10,28 @@ import { SEED_NOTIFICATIONS } from '../seed/seed.data';
  */
 @Injectable()
 export class NotificationsRepository {
-  private notifications: any[] = JSON.parse(JSON.stringify(SEED_NOTIFICATIONS));
+  private notifications: NotificationRecord[] =
+    structuredClone(SEED_NOTIFICATIONS);
   private counter = 100;
 
   generateId(): string {
-    return 'n_' + Date.now() + '_' + (this.counter++);
+    return 'n_' + Date.now() + '_' + this.counter++;
   }
 
-  findAll(query?: { userId?: string }): any[] {
-    if (query?.userId) return this.notifications.filter(n => n.userId === query.userId);
+  findAll(query?: { userId?: string }): NotificationRecord[] {
+    if (query?.userId)
+      return this.notifications.filter((n) => n.userId === query.userId);
     return this.notifications;
   }
 
-  insert(notification: any): any {
+  insert(notification: NotificationRecord): NotificationRecord {
     this.notifications.push(notification);
     return notification;
   }
 
   markAllReadByUserId(userId: string): number {
     let count = 0;
-    this.notifications.forEach(n => {
+    this.notifications.forEach((n) => {
       if (n.userId === userId && !n.read) {
         n.read = true;
         count++;
@@ -38,6 +41,6 @@ export class NotificationsRepository {
   }
 
   resetToSeed(): void {
-    this.notifications = JSON.parse(JSON.stringify(SEED_NOTIFICATIONS));
+    this.notifications = structuredClone(SEED_NOTIFICATIONS);
   }
 }

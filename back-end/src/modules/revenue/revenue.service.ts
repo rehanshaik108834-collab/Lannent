@@ -1,10 +1,11 @@
-import { Injectable, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { LedgerService } from '../ledger/ledger.service';
 import { TransactionsService } from '../transactions/transactions.service';
 import { UsersService } from '../users/users.service';
-import { TasksService } from '../tasks/tasks.service';
+import { TasksAccessService } from '../tasks/tasks-access.service';
 import { AuditRequestsService } from '../audit-requests/audit-requests.service';
 import { AuditService } from '../audit/audit.service';
+import { toPaise } from '../../common/money/inr';
 import { FEE_CONFIG, round2 } from '../ledger/fee-config';
 import { UpdateFeeConfigDto } from './dto/update-fee-config.dto';
 
@@ -21,16 +22,20 @@ const PAYOUT_TYPES = ['milestone-release', 'audit-release'];
 @Injectable()
 export class RevenueService {
   constructor(
-    @Inject(forwardRef(() => LedgerService)) private readonly ledger: LedgerService,
-    @Inject(forwardRef(() => TransactionsService)) private readonly transactions: TransactionsService,
-    @Inject(forwardRef(() => UsersService)) private readonly users: UsersService,
-    @Inject(forwardRef(() => TasksService)) private readonly tasks: TasksService,
-    @Inject(forwardRef(() => AuditRequestsService)) private readonly auditRequests: AuditRequestsService,
+    private readonly ledger: LedgerService,
+    private readonly transactions: TransactionsService,
+    private readonly users: UsersService,
+    private readonly tasks: TasksAccessService,
+    private readonly auditRequests: AuditRequestsService,
     private readonly audit: AuditService,
   ) {}
 
   private safe<T>(fn: () => T): T | null {
-    try { return fn(); } catch { return null; }
+    try {
+      return fn();
+    } catch {
+      return null;
+    }
   }
 
   private gross(t: any): number {
@@ -56,25 +61,40 @@ export class RevenueService {
       totalRevenue,
       grossVolume,
       // What share of the value flowing through the platform the platform keeps.
-      takeRate: grossVolume > 0 ? round2((totalRevenue / grossVolume) * 100) : 0,
+      takeRate:
+        grossVolume > 0 ? round2((totalRevenue / grossVolume) * 100) : 0,
       escrowHeld: this.ledger.totalHeld(),
-      activeContracts: allTasks.filter((t: any) => t.status === 'in-progress').length,
+      activeContracts: allTasks.filter((t: any) => t.status === 'in-progress')
+        .length,
       draftProjects: allTasks.filter((t: any) => t.status === 'draft').length,
       feeEvents: this.ledger.getRevenue().length,
     };
   }
 
   byFeeType() {
-    const rows: Record<string, { feeType: string; total: number; count: number; baseTotal: number }> = {};
+    const rows: Record<
+      string,
+      { feeType: string; total: number; count: number; baseTotal: number }
+    > = {};
     for (const r of this.ledger.getRevenue()) {
-      rows[r.feeType] ||= { feeType: r.feeType, total: 0, count: 0, baseTotal: 0 };
+      rows[r.feeType] ||= {
+        feeType: r.feeType,
+        total: 0,
+        count: 0,
+        baseTotal: 0,
+      };
       rows[r.feeType].total = round2(rows[r.feeType].total + r.amount);
-      rows[r.feeType].baseTotal = round2(rows[r.feeType].baseTotal + r.baseAmount);
+      rows[r.feeType].baseTotal = round2(
+        rows[r.feeType].baseTotal + r.baseAmount,
+      );
       rows[r.feeType].count++;
     }
     const total = this.ledger.totalRevenue();
     return Object.values(rows)
-      .map((r) => ({ ...r, share: total > 0 ? round2((r.total / total) * 100) : 0 }))
+      .map((r) => ({
+        ...r,
+        share: total > 0 ? round2((r.total / total) * 100) : 0,
+      }))
       .sort((a, b) => b.total - a.total);
   }
 
@@ -93,14 +113,19 @@ export class RevenueService {
       return iso.slice(0, 10);
     };
 
-    const buckets: Record<string, { period: string; revenue: number; events: number }> = {};
+    const buckets: Record<
+      string,
+      { period: string; revenue: number; events: number }
+    > = {};
     for (const r of this.ledger.getRevenue()) {
       const key = bucketOf(r.createdAt);
       buckets[key] ||= { period: key, revenue: 0, events: 0 };
       buckets[key].revenue = round2(buckets[key].revenue + r.amount);
       buckets[key].events++;
     }
-    return Object.values(buckets).sort((a, b) => a.period.localeCompare(b.period));
+    return Object.values(buckets).sort((a, b) =>
+      a.period.localeCompare(b.period),
+    );
   }
 
   /**
@@ -115,18 +140,35 @@ export class RevenueService {
     return this.users
       .findAll()
       .map((u: any) => {
-        const payouts = txs.filter((t: any) => PAYOUT_TYPES.includes(t.type) && t.toId === u.id);
-        const grossEarned = round2(payouts.reduce((a: number, t: any) => a + this.gross(t), 0));
-        const netReceived = round2(payouts.reduce((a: number, t: any) => a + (t.netAmount ?? t.amount ?? 0), 0));
+        const payouts = txs.filter(
+          (t: any) => PAYOUT_TYPES.includes(t.type) && t.toId === u.id,
+        );
+        const grossEarned = round2(
+          payouts.reduce((a: number, t: any) => a + this.gross(t), 0),
+        );
+        const netReceived = round2(
+          payouts.reduce(
+            (a: number, t: any) => a + (t.netAmount ?? t.amount ?? 0),
+            0,
+          ),
+        );
 
-        const deposits = txs.filter((t: any) => t.type === 'deposit' && t.toId === u.id);
-        const withdrawals = txs.filter((t: any) => t.type === 'withdrawal' && t.fromId === u.id);
+        const deposits = txs.filter(
+          (t: any) => t.type === 'deposit' && t.toId === u.id,
+        );
+        const withdrawals = txs.filter(
+          (t: any) => t.type === 'withdrawal' && t.fromId === u.id,
+        );
         const escrowFunded = txs.filter(
-          (t: any) => ['escrow-lock', 'audit-escrow-lock'].includes(t.type) && t.fromId === u.id,
+          (t: any) =>
+            ['escrow-lock', 'audit-escrow-lock'].includes(t.type) &&
+            t.fromId === u.id,
         );
 
         const feesPaid = round2(
-          revenue.filter((r) => r.fromUserId === u.id).reduce((a, r) => a + r.amount, 0),
+          revenue
+            .filter((r) => r.fromUserId === u.id)
+            .reduce((a, r) => a + r.amount, 0),
         );
 
         return {
@@ -139,14 +181,27 @@ export class RevenueService {
           grossEarned,
           netReceived,
           feesPaid,
-          totalDeposited: round2(deposits.reduce((a: number, t: any) => a + this.gross(t), 0)),
-          totalWithdrawn: round2(withdrawals.reduce((a: number, t: any) => a + this.gross(t), 0)),
-          escrowFunded: round2(escrowFunded.reduce((a: number, t: any) => a + this.gross(t), 0)),
+          totalDeposited: round2(
+            deposits.reduce((a: number, t: any) => a + this.gross(t), 0),
+          ),
+          totalWithdrawn: round2(
+            withdrawals.reduce((a: number, t: any) => a + this.gross(t), 0),
+          ),
+          escrowFunded: round2(
+            escrowFunded.reduce((a: number, t: any) => a + this.gross(t), 0),
+          ),
           // Effective rate this user paid on what they earned.
-          effectiveRate: grossEarned > 0 ? round2((feesPaid / grossEarned) * 100) : 0,
+          effectiveRate:
+            grossEarned > 0 ? round2((feesPaid / grossEarned) * 100) : 0,
         };
       })
-      .filter((r) => r.grossEarned > 0 || r.feesPaid > 0 || r.escrowFunded > 0 || r.totalDeposited > 0)
+      .filter(
+        (r) =>
+          r.grossEarned > 0 ||
+          r.feesPaid > 0 ||
+          r.escrowFunded > 0 ||
+          r.totalDeposited > 0,
+      )
       .sort((a, b) => b.grossEarned - a.grossEarned);
   }
 
@@ -162,7 +217,9 @@ export class RevenueService {
     // An escrow-lock row's grossAmount is what the client was charged in total
     // (budget + marketplace + initiation); only netAmount entered escrow.
     const funded = sum(
-      txs.filter((t: any) => ['escrow-lock', 'audit-escrow-lock'].includes(t.type)),
+      txs.filter((t: any) =>
+        ['escrow-lock', 'audit-escrow-lock'].includes(t.type),
+      ),
       (t) => t.netAmount ?? t.amount ?? 0,
     );
     const workerNet = sum(
@@ -218,12 +275,21 @@ export class RevenueService {
       .map((taskId) => {
         const task = this.safe(() => this.tasks.findById(taskId));
         const rev = round2(
-          revenue.filter((r) => r.taskId === taskId).reduce((a, r) => a + r.amount, 0),
+          revenue
+            .filter((r) => r.taskId === taskId)
+            .reduce((a, r) => a + r.amount, 0),
         );
         const funded = round2(
           txs
-            .filter((t: any) => ['escrow-lock', 'audit-escrow-lock'].includes(t.type) && t.taskId === taskId)
-            .reduce((a: number, t: any) => a + (t.netAmount ?? t.amount ?? 0), 0),
+            .filter(
+              (t: any) =>
+                ['escrow-lock', 'audit-escrow-lock'].includes(t.type) &&
+                t.taskId === taskId,
+            )
+            .reduce(
+              (a: number, t: any) => a + (t.netAmount ?? t.amount ?? 0),
+              0,
+            ),
         );
         return {
           taskId,
@@ -233,7 +299,9 @@ export class RevenueService {
           budget: task?.budget || 0,
           funded,
           platformRevenue: rev,
-          escrowHeld: this.ledger.getEscrow(taskId).projectHeld + this.ledger.getEscrow(taskId).auditHeld,
+          escrowHeld:
+            this.ledger.getEscrow(taskId).projectHeld +
+            this.ledger.getEscrow(taskId).auditHeld,
         };
       })
       .sort((a, b) => b.platformRevenue - a.platformRevenue);
@@ -246,15 +314,22 @@ export class RevenueService {
    */
   projectBreakdown(taskId: string) {
     const task = this.tasks.findById(taskId);
-    const txs = this.transactions.findAll().filter((t: any) => t.taskId === taskId);
+    const txs = this.transactions
+      .findAll()
+      .filter((t: any) => t.taskId === taskId);
     const revenue = this.ledger.getRevenue().filter((r) => r.taskId === taskId);
     const escrow = this.ledger.getEscrow(taskId);
 
-    const sum = (rows: any[], pick: (t: any) => number) => round2(rows.reduce((a, t) => a + pick(t), 0));
+    const sum = (rows: any[], pick: (t: any) => number) =>
+      round2(rows.reduce((a, t) => a + pick(t), 0));
     const gross = (t: any) => t.grossAmount ?? t.amount ?? 0;
     const net = (t: any) => t.netAmount ?? t.amount ?? 0;
     const feeOf = (type: string) =>
-      round2(revenue.filter((r) => r.feeType === type).reduce((a, r) => a + r.amount, 0));
+      round2(
+        revenue
+          .filter((r) => r.feeType === type)
+          .reduce((a, r) => a + r.amount, 0),
+      );
 
     // An audit payout belongs to an engagement; its kind says whether the money
     // was earned auditing the project or arbitrating a dispute on it.
@@ -265,28 +340,42 @@ export class RevenueService {
         : null;
       return ar?.kind || 'project-audit';
     };
-    const auditRows = auditReleases.filter((t: any) => kindOf(t) === 'project-audit');
-    const disputeRows = auditReleases.filter((t: any) => kindOf(t) === 'dispute-audit');
+    const auditRows = auditReleases.filter(
+      (t: any) => kindOf(t) === 'project-audit',
+    );
+    const disputeRows = auditReleases.filter(
+      (t: any) => kindOf(t) === 'dispute-audit',
+    );
 
     const escrowLocks = txs.filter((t: any) => t.type === 'escrow-lock');
     const auditLocks = txs.filter((t: any) => t.type === 'audit-escrow-lock');
     const releases = txs.filter((t: any) => t.type === 'milestone-release');
     const refunds = txs.filter((t: any) => t.type === 'refund');
 
-    const client = task.clientId ? this.safe(() => this.users.findById(task.clientId)) : null;
-    const worker = task.workerId ? this.safe(() => this.users.findById(task.workerId)) : null;
-    const nameOf = (id: string) => this.safe(() => this.users.findById(id))?.name || id;
+    const client = task.clientId
+      ? this.safe(() => this.users.findById(task.clientId))
+      : null;
+    const worker = task.workerId
+      ? this.safe(() => this.users.findById(task.workerId!))
+      : null;
+    const nameOf = (id: string) =>
+      this.safe(() => this.users.findById(id))?.name || id;
 
     const marketplace = feeOf('client-marketplace');
     const initiation = feeOf('contract-initiation');
     const workerFees = feeOf('worker-service');
     const expertFees = feeOf('expert-service');
-    const platformRevenue = round2(marketplace + initiation + workerFees + expertFees);
+    const platformRevenue = round2(
+      marketplace + initiation + workerFees + expertFees,
+    );
 
     return {
       project: {
-        id: task.id, title: task.title, status: task.status,
-        category: task.category, budget: task.budget,
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        category: task.category,
+        budget: task.budget,
         client: client ? { id: client.id, name: client.name } : null,
         worker: worker ? { id: worker.id, name: worker.name } : null,
       },
@@ -297,7 +386,12 @@ export class RevenueService {
         intoAuditEscrow: sum(auditLocks, net),
         marketplaceFee: marketplace,
         initiationFee: initiation,
-        total: round2(sum(escrowLocks, net) + sum(auditLocks, net) + marketplace + initiation),
+        total: round2(
+          sum(escrowLocks, net) +
+            sum(auditLocks, net) +
+            marketplace +
+            initiation,
+        ),
       },
 
       // What the gig worker took out
@@ -322,12 +416,17 @@ export class RevenueService {
         commission: round2(sum(disputeRows, gross) - sum(disputeRows, net)),
         netReceived: sum(disputeRows, net),
         count: disputeRows.length,
-        reviewers: [...new Set(disputeRows.map((t: any) => t.toId))].map(nameOf),
+        reviewers: [...new Set(disputeRows.map((t: any) => t.toId))].map(
+          nameOf,
+        ),
       },
 
       refundedToClient: sum(refunds, gross),
-      stillHeld: { project: escrow.projectHeld, audit: escrow.auditHeld,
-                   total: round2(escrow.projectHeld + escrow.auditHeld) },
+      stillHeld: {
+        project: escrow.projectHeld,
+        audit: escrow.auditHeld,
+        total: round2(escrow.projectHeld + escrow.auditHeld),
+      },
 
       platformEarnings: {
         marketplaceFee: marketplace,
@@ -338,8 +437,15 @@ export class RevenueService {
       },
 
       ledger: txs.map((t: any) => ({
-        id: t.id, type: t.type, gross: gross(t), fee: t.feeAmount ?? 0, net: net(t),
-        from: t.fromId, to: t.toId, description: t.description, createdAt: t.createdAt,
+        id: t.id,
+        type: t.type,
+        gross: gross(t),
+        fee: t.feeAmount ?? 0,
+        net: net(t),
+        from: t.fromId,
+        to: t.toId,
+        description: t.description,
+        createdAt: t.createdAt,
       })),
     };
   }
@@ -370,39 +476,86 @@ export class RevenueService {
     // A snapshot, not a reference. `getFeeConfig()` hands back the live
     // FEE_CONFIG objects, so the rates below would mutate `before` too and
     // every diff would come out empty.
+    // Validate the whole request before changing any rate.
+    for (const [name, values, expected, maximum] of [
+      [
+        'workerServicePercents',
+        dto.workerServicePercents,
+        FEE_CONFIG.workerService.length,
+        100,
+      ],
+      [
+        'contractInitiationFees',
+        dto.contractInitiationFees,
+        FEE_CONFIG.contractInitiation.length,
+        1000,
+      ],
+    ] as const) {
+      if (
+        values !== undefined &&
+        (!Array.isArray(values) ||
+          values.length !== expected ||
+          values.some(
+            (value) => !Number.isFinite(value) || value < 0 || value > maximum,
+          ))
+      )
+        throw new BadRequestException(
+          `${name} must contain ${expected} valid amounts.`,
+        );
+    }
+    for (const amount of [
+      dto.depositFixed,
+      dto.withdrawalFixed,
+      ...(dto.contractInitiationFees ?? []),
+    ])
+      if (amount !== undefined) toPaise(amount);
     const before = structuredClone(this.getFeeConfig());
-    if (dto.depositPercent !== undefined) FEE_CONFIG.deposit.percent = dto.depositPercent;
-    if (dto.depositFixed !== undefined) FEE_CONFIG.deposit.fixed = dto.depositFixed;
+    if (dto.depositPercent !== undefined)
+      FEE_CONFIG.deposit.percent = dto.depositPercent;
+    if (dto.depositFixed !== undefined)
+      FEE_CONFIG.deposit.fixed = dto.depositFixed;
     if (dto.clientMarketplacePercent !== undefined) {
       FEE_CONFIG.clientMarketplace.percent = dto.clientMarketplacePercent;
     }
-    if (dto.expertServicePercent !== undefined) FEE_CONFIG.expertService.percent = dto.expertServicePercent;
-    if (dto.withdrawalPercent !== undefined) FEE_CONFIG.withdrawal.percent = dto.withdrawalPercent;
-    if (dto.withdrawalFixed !== undefined) FEE_CONFIG.withdrawal.fixed = dto.withdrawalFixed;
+    if (dto.expertServicePercent !== undefined)
+      FEE_CONFIG.expertService.percent = dto.expertServicePercent;
+    if (dto.withdrawalPercent !== undefined)
+      FEE_CONFIG.withdrawal.percent = dto.withdrawalPercent;
+    if (dto.withdrawalFixed !== undefined)
+      FEE_CONFIG.withdrawal.fixed = dto.withdrawalFixed;
 
     if (dto.workerServicePercents) {
-      if (dto.workerServicePercents.length !== FEE_CONFIG.workerService.length) {
+      if (
+        dto.workerServicePercents.length !== FEE_CONFIG.workerService.length
+      ) {
         throw new BadRequestException(
           `Expected ${FEE_CONFIG.workerService.length} worker service tiers, received ${dto.workerServicePercents.length}.`,
         );
       }
       dto.workerServicePercents.forEach((p, i) => {
         if (typeof p !== 'number' || p < 0 || p > 100) {
-          throw new BadRequestException(`Worker service tier ${i + 1} must be between 0 and 100.`);
+          throw new BadRequestException(
+            `Worker service tier ${i + 1} must be between 0 and 100.`,
+          );
         }
         FEE_CONFIG.workerService[i].percent = p;
       });
     }
 
     if (dto.contractInitiationFees) {
-      if (dto.contractInitiationFees.length !== FEE_CONFIG.contractInitiation.length) {
+      if (
+        dto.contractInitiationFees.length !==
+        FEE_CONFIG.contractInitiation.length
+      ) {
         throw new BadRequestException(
           `Expected ${FEE_CONFIG.contractInitiation.length} initiation bands, received ${dto.contractInitiationFees.length}.`,
         );
       }
       dto.contractInitiationFees.forEach((f, i) => {
         if (typeof f !== 'number' || f < 0) {
-          throw new BadRequestException(`Initiation band ${i + 1} must be zero or greater.`);
+          throw new BadRequestException(
+            `Initiation band ${i + 1} must be zero or greater.`,
+          );
         }
         FEE_CONFIG.contractInitiation[i].fee = f;
       });
@@ -424,7 +577,10 @@ export class RevenueService {
  */
 function diffRates(before: any, after: any, path = ''): Record<string, any> {
   const out: Record<string, any> = {};
-  for (const key of new Set([...Object.keys(before || {}), ...Object.keys(after || {})])) {
+  for (const key of new Set([
+    ...Object.keys(before || {}),
+    ...Object.keys(after || {}),
+  ])) {
     const a = before?.[key];
     const b = after?.[key];
     const where = path ? `${path}.${key}` : key;

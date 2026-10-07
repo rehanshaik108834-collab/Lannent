@@ -1,15 +1,19 @@
-import { Module, NestModule, MiddlewareConsumer, RequestMethod } from '@nestjs/common';
+import { TransactionsCoreModule } from './transactions.core.module';
+import {
+  Module,
+  NestModule,
+  MiddlewareConsumer,
+  RequestMethod,
+} from '@nestjs/common';
 import { TransactionsController } from './transactions.controller';
-import { TransactionsService } from './transactions.service';
-import { TransactionsRepository } from './transactions.repository';
 
 import { RequireAuthMiddleware } from '../../common/middleware/require-auth.middleware';
 import { MoneyTrailMiddleware } from '../../common/middleware/money-trail.middleware';
 
 @Module({
+  imports: [TransactionsCoreModule],
   controllers: [TransactionsController],
-  providers: [TransactionsRepository, TransactionsService],
-  exports: [TransactionsService],
+  exports: [TransactionsCoreModule],
 })
 export class TransactionsModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {

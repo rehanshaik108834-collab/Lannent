@@ -1,6 +1,6 @@
 import { Controller, Get, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
-import { ApiTags, ApiOperation, ApiHeader, ApiQuery } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { AuditService } from './audit.service';
 import { RoleGuard } from '../../common/guards/role.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -20,7 +20,7 @@ export class AuditController {
   constructor(private readonly audit: AuditService) {}
 
   @Get()
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
+  @ApiBearerAuth()
   @Roles(ROLES.COMPLIANCE_ADMIN)
   @ApiOperation({ summary: 'Read the audit trail (compliance only)' })
   @ApiQuery({ name: 'actorId', required: false })
@@ -41,7 +41,7 @@ export class AuditController {
   }
 
   @Get('export')
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
+  @ApiBearerAuth()
   @Roles(ROLES.COMPLIANCE_ADMIN)
   @ApiOperation({ summary: 'The same rows as CSV' })
   export(

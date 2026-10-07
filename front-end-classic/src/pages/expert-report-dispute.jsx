@@ -1,0 +1,418 @@
+import DashboardLayout, { EmptyState } from '../components/DashboardLayout';
+import Icon from '../components/Icon';
+import A from '../components/A';
+import { Store } from '../lib/store';
+import { getParam, usePageStyle } from '../lib/hooks';
+import css from './expert-report-dispute.css?inline';
+
+// main.js escapeHtml. Used only where the original escaped a value that was
+// then escaped again, so the double-escaped text shows exactly as before.
+function escapeHtml(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+const fmtDate = (d) => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+const linkHoverOn = (e) => { e.currentTarget.style.color = 'var(--foreground)'; };
+const linkHoverOff = (e) => { e.currentTarget.style.color = 'var(--muted-foreground)'; };
+
+export default function ExpertReportDispute() {
+  usePageStyle(css);
+  const rid = getParam('id') || getParam('disputeId') || '';
+  const role = getParam('role') || 'expert';
+
+  // Load from Store — fall back to first resolved dispute
+  let rawDispute = rid ? Store.getDisputeById(rid) : null;
+  if (!rawDispute) {
+    const all = Store.getDisputes();
+    rawDispute = all.find((d) => d.status === 'resolved') || all[0] || null;
+  }
+  if (!rawDispute) {
+    return (
+      <EmptyState
+        role="expert"
+        activePath="expert-dispute-cases.html"
+        pageTitle="Dispute Report"
+        message="No dispute report found."
+        linkHref="expert-dispute-cases.html"
+        linkLabel="Back to Cases"
+      />
+    );
+  }
+  const _task = Store.getTaskById(rawDispute.taskId);
+  const _raiser = Store.getUserById(rawDispute.raisedBy);
+  const _respondent = Store.getUserById(rawDispute.againstId);
+  const _expert = rawDispute.expertId ? Store.getUserById(rawDispute.expertId) : null;
+
+  // Severity is set on the audit engagement the dispute opened.
+  const _engagement = (Store.getAuditRequests() || []).find((a) => a.disputeId === rawDispute.id);
+  const _severity = _engagement ? _engagement.severity : 'Medium';
+
+  // What the reviewer actually examines: the claim, and the disputed
+  // milestone's submission.
+  const _milestone = rawDispute.milestoneId ? Store.getMilestoneById(rawDispute.milestoneId) : null;
+  const _deliverable = _milestone ? _milestone.deliverable : null;
+
+  const _evidence = [
+    { label: 'The claim', text: rawDispute.reason || 'No reason recorded.' },
+  ];
+  if (_milestone) {
+    _evidence.push({
+      label: 'Disputed milestone',
+      // The original escaped the title here and again when rendering.
+      text: `${escapeHtml(_milestone.title)} — $${Number(_milestone.budget || 0).toLocaleString()}, status ${_milestone.status}`,
+    });
+  }
+  if (_deliverable) {
+    _evidence.push({
+      label: 'Worker submission',
+      text: [_deliverable.title, _deliverable.description].filter(Boolean).join(' — ') || 'Submitted without a description.',
+    });
+  } else if (_milestone) {
+    _evidence.push({ label: 'Worker submission', text: 'Nothing was submitted for this milestone.' });
+  }
+
+  // Real attachments only. There is no file store yet, so a link is all
+  // there is to show — inventing a file list would be worse than none.
+  const _files = [];
+  if (_deliverable && _deliverable.link) {
+    _files.push({ name: _deliverable.link, size: 'Submitted link', icon: 'link' });
+  }
+  if (_deliverable && Array.isArray(_deliverable.files)) {
+    _deliverable.files.forEach((f) => _files.push({
+      name: f.name || String(f), size: f.size || 'Attached file', icon: 'file-text',
+    }));
+  }
+
+  const r = {
+    reportId: 'DSP-' + rawDispute.id.toUpperCase(),
+    type: 'Dispute Resolution',
+    project: rawDispute.project || (_task ? _task.title : 'Unknown'),
+    milestone: rawDispute.milestone || 'Milestone',
+    issue: rawDispute.reason ? rawDispute.reason.substring(0, 80) : 'Dispute',
+    generatedDate: rawDispute.resolvedAt ? fmtDate(rawDispute.resolvedAt) : 'Recently',
+    status: rawDispute.status === 'resolved' ? 'Published' : 'Draft',
+    verdictClass: rawDispute.verdict === 'worker-favour' ? 'verdict-worker' : rawDispute.verdict === 'client-favour' ? 'verdict-client' : 'verdict-pending',
+    escrow: rawDispute.amount || '$0',
+    raisedByName: _raiser ? _raiser.name : (rawDispute.raisedByName || 'Unknown'),
+    raisedByInitials: _raiser ? _raiser.avatar : '?',
+    raisedByColor: _raiser ? _raiser.avatarColor : '#6366f1',
+    respondentName: _respondent ? _respondent.name : (rawDispute.againstName || 'Unknown'),
+    respondentInitials: _respondent ? _respondent.avatar : '?',
+    respondentColor: _respondent ? _respondent.avatarColor : '#10b981',
+    expertName: _expert ? _expert.name : 'Expert Reviewer',
+    expertInitials: _expert ? _expert.avatar : 'ER',
+    expertTitle: _expert ? (_expert.jobTitle || 'Expert Reviewer') : 'Expert Reviewer',
+    resolution: rawDispute.resolution || 'Resolution pending.',
+    decision: rawDispute.verdict === 'worker-favour' ? 'In Favour of Worker'
+      : rawDispute.verdict === 'client-favour' ? 'In Favour of Client'
+      : rawDispute.verdict || 'Pending Review',
+    verdictIcon: rawDispute.verdict === 'worker-favour' ? 'check-circle'
+      : rawDispute.verdict === 'client-favour' ? 'user-check'
+      : 'clock',
+    // Severity lives on the audit engagement the dispute opened, not on the
+    // dispute itself.
+    severity: _severity,
+    severityClass: _severity === 'High' ? 'sev-high' : _severity === 'Low' ? 'sev-low' : 'sev-medium',
+    caseId: '#DIS-' + (rawDispute.id || '0000').toString().toUpperCase(),
+    raisedDate: rawDispute.createdAt ? fmtDate(rawDispute.createdAt) : 'N/A',
+    raisedBy: _raiser ? (_raiser.role === 'worker' ? 'Gig Worker' : 'Client') : 'User',
+    respondent: _respondent ? (_respondent.role === 'worker' ? 'Gig Worker' : 'Client') : 'User',
+    disputeDescription: rawDispute.reason || 'No description provided for this dispute.',
+    // The evidence is the disputed milestone itself — the claim, and what
+    // the worker actually submitted.
+    evidenceReviewed: _evidence,
+    // The reviewer's own words, or an honest gap.
+    expertAnalysis: rawDispute.resolution || null,
+    files: _files,
+    timeline: [
+      { dot: 'blue', time: rawDispute.createdAt ? fmtDate(rawDispute.createdAt) : '—', text: 'Dispute raised', sub: _expert ? `Escrow frozen. Assigned to ${_expert.name}.` : 'Escrow frozen. Awaiting a reviewer.' },
+      { dot: 'purple', time: rawDispute.resolvedAt ? fmtDate(rawDispute.resolvedAt) : '—', text: 'Expert reviewed case', sub: rawDispute.resolvedAt ? 'Deliverable and dispute details reviewed.' : 'Not yet reviewed.' },
+      { dot: 'green', time: rawDispute.resolvedAt ? fmtDate(rawDispute.resolvedAt) : '—', text: 'Verdict issued', sub: rawDispute.resolution ? rawDispute.resolution.substring(0, 80) + '...' : 'Resolution issued.' },
+    ],
+  };
+
+  const analysisParagraphs = (r.expertAnalysis || '').split('\n\n').filter((p) => p.trim());
+
+  return (
+    <DashboardLayout
+      role={role}
+      activePath={role === 'worker' ? 'worker-milestone-board.html' : role === 'client' ? 'client-my-projects.html' : 'expert-reports.html'}
+      pageTitle="Dispute Resolution Report"
+      pageSubtitle={`${r.reportId} · ${r.project}`}
+    >
+      {/* Back link */}
+      <div style={{ marginBottom: 16 }}>
+        <A href={role === 'expert' ? 'expert-reports.html' : 'milestone-reports.html?role=' + role} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 14, color: 'var(--muted-foreground)', transition: 'color 0.15s' }} onMouseEnter={linkHoverOn} onMouseLeave={linkHoverOff}>
+          <Icon name="arrow-left" style={{ width: 16, height: 16 }} /> Back to Reports
+        </A>
+      </div>
+
+      {/* Report Header */}
+      <div className="report-header">
+        <div className="report-id-badge">
+          <Icon name="scale" style={{ width: 12, height: 12 }} />
+          {r.reportId}
+        </div>
+        <div className="report-title-main">{`${r.type} Report`}</div>
+        <div className="report-subtitle">{`${r.project} · ${r.milestone}`}</div>
+        <div className="report-meta-row">
+          <div className="report-meta-item">
+            <span className="report-meta-label">Case ID</span>
+            <span className="report-meta-value">{r.caseId}</span>
+          </div>
+          <div className="report-meta-item">
+            <span className="report-meta-label">Issue</span>
+            <span className="report-meta-value">{r.issue}</span>
+          </div>
+          <div className="report-meta-item">
+            <span className="report-meta-label">Date Raised</span>
+            <span className="report-meta-value">{r.raisedDate}</span>
+          </div>
+          <div className="report-meta-item">
+            <span className="report-meta-label">Report Date</span>
+            <span className="report-meta-value">{r.generatedDate}</span>
+          </div>
+          <div className="report-meta-item">
+            <span className="report-meta-label">Escrow</span>
+            <span className="report-meta-value">{r.escrow}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Verdict Banner */}
+      <div className={`verdict-banner ${r.verdictClass}`}>
+        <div className="verdict-icon-wrap">
+          <Icon name={r.verdictIcon} style={{ width: 22, height: 22, color: 'white' }} />
+        </div>
+        <div>
+          <div className="verdict-label">Expert Verdict</div>
+          <div className="verdict-text">{r.decision}</div>
+        </div>
+        <div style={{ marginLeft: 'auto' }}>
+          <span className={`sev-badge ${r.severityClass}`}>
+            <Icon name="alert-triangle" style={{ width: 11, height: 11 }} />
+            {`${r.severity.charAt(0).toUpperCase() + r.severity.slice(1)} Severity`}
+          </span>
+        </div>
+      </div>
+
+      <div className="report-layout">
+        {/* ═══ LEFT COLUMN ═══ */}
+        <div>
+
+          {/* Parties Involved */}
+          <div className="rc">
+            <div className="rc-head">
+              <div className="rc-head-icon" style={{ background: '#faf5ff' }}>
+                <Icon name="users" style={{ width: 15, height: 15, color: '#a855f7' }} />
+              </div>
+              <span className="rc-head-title">Parties Involved</span>
+            </div>
+            <div className="rc-body" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div className="party-card">
+                <div className="party-avatar" style={{ background: r.raisedByColor }}>{r.raisedByInitials}</div>
+                <div>
+                  <div className="party-name">{r.raisedByName}</div>
+                  <div className="party-role">{r.raisedBy}</div>
+                </div>
+                <span className="party-tag tag-raiser">Dispute Raiser</span>
+              </div>
+              <div className="party-card">
+                <div className="party-avatar" style={{ background: r.respondentColor }}>{r.respondentInitials}</div>
+                <div>
+                  <div className="party-name">{r.respondentName}</div>
+                  <div className="party-role">{r.respondent}</div>
+                </div>
+                <span className="party-tag tag-respondent">Respondent</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Dispute Description */}
+          <div className="rc">
+            <div className="rc-head">
+              <div className="rc-head-icon" style={{ background: '#fee2e2' }}>
+                <Icon name="alert-circle" style={{ width: 15, height: 15, color: '#ef4444' }} />
+              </div>
+              <span className="rc-head-title">Dispute Description</span>
+            </div>
+            <div className="rc-body">
+              <div className="summary-box">{r.disputeDescription}</div>
+            </div>
+          </div>
+
+          {/* Evidence Reviewed */}
+          <div className="rc">
+            <div className="rc-head">
+              <div className="rc-head-icon" style={{ background: '#eff6ff' }}>
+                <Icon name="search" style={{ width: 15, height: 15, color: '#3b82f6' }} />
+              </div>
+              <span className="rc-head-title">Evidence Reviewed</span>
+              <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted-foreground)' }}>{`${r.evidenceReviewed.length} item${r.evidenceReviewed.length !== 1 ? 's' : ''}`}</span>
+            </div>
+            <div className="rc-body">
+              {(r.evidenceReviewed && r.evidenceReviewed.length)
+                ? r.evidenceReviewed.map((e, i) => (
+                  <div key={i} className="evidence-quote">
+                    <div className="evidence-label">{e.label}</div>
+                    {e.text}
+                  </div>
+                ))
+                : <div style={{ fontSize: 13, color: 'var(--muted-foreground)', padding: 12 }}>No specific evidence items recorded.</div>}
+            </div>
+          </div>
+
+          {/* Expert Analysis */}
+          <div className="rc">
+            <div className="rc-head">
+              <div className="rc-head-icon" style={{ background: '#fafaf9' }}>
+                <Icon name="scale" style={{ width: 15, height: 15, color: '#78716c' }} />
+              </div>
+              <span className="rc-head-title">Expert Analysis &amp; Reasoning</span>
+            </div>
+            <div className="rc-body">
+              <div className="summary-box">
+                {analysisParagraphs.length
+                  ? analysisParagraphs.map((p, i) => <p key={i} style={{ marginBottom: 12 }}>{p}</p>)
+                  : <p style={{ color: 'var(--muted-foreground)' }}>No detailed analysis recorded.</p>}
+              </div>
+            </div>
+          </div>
+
+          {/* Case Timeline */}
+          <div className="rc">
+            <div className="rc-head">
+              <div className="rc-head-icon" style={{ background: '#ecfdf5' }}>
+                <Icon name="clock" style={{ width: 15, height: 15, color: '#10b981' }} />
+              </div>
+              <span className="rc-head-title">Case Timeline</span>
+            </div>
+            <div className="rc-body">
+              <div className="timeline">
+                {r.timeline.map((t, i) => (
+                  <div key={i} className="tl-item">
+                    <div className={`tl-dot ${t.dot}`} />
+                    <div className="tl-time">{t.time}</div>
+                    <div className="tl-text">{t.text}</div>
+                    <div className="tl-sub">{t.sub}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Resolution & Next Steps */}
+          <div className="rc">
+            <div className="rc-head">
+              <div className="rc-head-icon" style={{ background: '#fffbeb' }}>
+                <Icon name="check-square" style={{ width: 15, height: 15, color: '#f59e0b' }} />
+              </div>
+              <span className="rc-head-title">Resolution &amp; Next Steps</span>
+            </div>
+            <div className="rc-body">
+              <div className="summary-box">{r.resolution}</div>
+            </div>
+          </div>
+
+          {/* Reviewed Files */}
+          <div className="rc">
+            <div className="rc-head">
+              <div className="rc-head-icon" style={{ background: '#f3f4f6' }}>
+                <Icon name="folder" style={{ width: 15, height: 15, color: '#6b7280' }} />
+              </div>
+              <span className="rc-head-title">Evidence Files Reviewed</span>
+            </div>
+            <div className="rc-body">
+              {(r.files && r.files.length)
+                ? r.files.map((f, i) => (
+                  <div key={i} className="file-row">
+                    <div className="file-icon-wrap" style={{ background: f.iconBg || '#f3f4f6' }}>
+                      <Icon name={f.icon || 'file'} style={{ width: 16, height: 16, color: f.iconColor || '#6b7280' }} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="file-name">{f.name}</div>
+                      <div className="file-size">{f.size}</div>
+                    </div>
+                    {/^https?:\/\//.test(f.name) ? (
+                      <a className="btn-act" style={{ width: 'auto', padding: '5px 12px', fontSize: 12, marginBottom: 0, textDecoration: 'none' }} href={f.name} target="_blank" rel="noopener noreferrer">
+                        <Icon name="external-link" style={{ width: 12, height: 12 }} /> Open
+                      </a>
+                    ) : null}
+                  </div>
+                ))
+                : <div style={{ fontSize: 13, color: 'var(--muted-foreground)', padding: 12 }}>The worker submitted no files or links for the disputed milestone.</div>}
+            </div>
+          </div>
+
+        </div>
+
+        {/* ═══ RIGHT COLUMN ═══ */}
+        <div style={{ position: 'sticky', top: 80 }}>
+
+          {/* Expert Signature */}
+          <div className="expert-sig" style={{ marginBottom: 16 }}>
+            <div className="expert-avatar">{r.expertInitials}</div>
+            <div className="expert-name">{r.expertName}</div>
+            <div className="expert-role">{r.expertTitle}</div>
+            <hr className="section-divider" />
+            <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#78716c', marginBottom: 6 }}>Final Verdict</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#1c1917' }}>{r.decision}</div>
+          </div>
+
+          {/* Report Details */}
+          <div className="rc" style={{ marginBottom: 16 }}>
+            <div className="rc-head">
+              <div className="rc-head-icon" style={{ background: '#f3f4f6' }}>
+                <Icon name="info" style={{ width: 15, height: 15, color: '#6b7280' }} />
+              </div>
+              <span className="rc-head-title">Report Details</span>
+            </div>
+            <div className="rc-body">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div className="info-cell">
+                  <span className="info-label">Report ID</span>
+                  <span className="info-value mono">{r.reportId}</span>
+                </div>
+                <div className="info-cell">
+                  <span className="info-label">Case ID</span>
+                  <span className="info-value mono">{r.caseId}</span>
+                </div>
+                <div className="info-cell">
+                  <span className="info-label">Project</span>
+                  <span className="info-value">{r.project}</span>
+                </div>
+                <div className="info-cell">
+                  <span className="info-label">Milestone</span>
+                  <span className="info-value">{r.milestone}</span>
+                </div>
+                <div className="info-cell">
+                  <span className="info-label">Escrow Amount</span>
+                  <span className="info-value" style={{ color: '#10b981', fontWeight: 700 }}>{r.escrow}</span>
+                </div>
+                <div className="info-cell">
+                  <span className="info-label">Status</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', padding: '3px 10px', borderRadius: 9999, fontSize: 11, fontWeight: 600, ...(r.status === 'Published' ? { background: '#dbeafe', border: '1px solid #93c5fd', color: '#1d4ed8' } : { background: '#f3f4f6', border: '1px solid #d1d5db', color: '#4b5563' }) }}>{r.status}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div>
+            <button className="btn-act" onClick={() => window.print()}>
+              <Icon name="printer" style={{ width: 14, height: 14 }} />
+              Print Report
+            </button>
+            {' '}
+            <button className="btn-act" onClick={() => alert('Downloading PDF…')}>
+              <Icon name="download" style={{ width: 14, height: 14 }} />
+              Download PDF
+            </button>
+          </div>
+
+        </div>
+      </div>
+    </DashboardLayout>
+  );
+}

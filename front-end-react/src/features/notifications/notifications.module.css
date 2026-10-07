@@ -1,0 +1,35 @@
+.wrapper {
+  position: relative;
+}
+.panel {
+  position: absolute;
+  right: 0;
+  top: 52px;
+  width: min(380px, 90vw);
+  max-height: 65vh;
+  overflow: auto;
+  z-index: 3;
+  padding: 20px;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px #0002;
+}
+.panel ul {
+  list-style: none;
+  padding: 0;
+}
+.panel li {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.panel h2 {
+  font-size: 18px;
+}
+@media (max-width: 720px) {
+  .panel {
+    position: fixed;
+    top: 100px;
+    right: 5vw;
+  }
+}

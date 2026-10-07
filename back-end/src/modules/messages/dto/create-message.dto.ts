@@ -6,9 +6,10 @@ export class CreateMessageDto {
   @IsString()
   taskId: string;
 
-  @ApiProperty({ example: 'u1' })
-  @IsString()
-  senderId: string;
+  @ApiPropertyOptional({ example: 'u1' })
+  /** Optional and redundant: the sender is the signed-in account. A mismatch is rejected. */
+  @IsOptional() @IsString()
+  senderId?: string;
 
   @ApiProperty({ example: 'u2' })
   @IsString()

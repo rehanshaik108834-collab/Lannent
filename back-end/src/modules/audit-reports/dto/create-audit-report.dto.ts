@@ -14,9 +14,10 @@ export class CreateAuditReportDto {
   @IsOptional() @IsString()
   milestoneId?: string;
 
-  @ApiProperty({ example: 'u3' })
-  @IsString()
-  expertId: string;
+  /** Optional and redundant: the reviewer is the signed-in expert. A mismatch is rejected. */
+  @ApiPropertyOptional({ example: 'u3' })
+  @IsOptional() @IsString()
+  expertId?: string;
 
   @ApiPropertyOptional({ example: 'pass', enum: ['pass', 'fail', 'conditional'] })
   @IsOptional() @IsString()

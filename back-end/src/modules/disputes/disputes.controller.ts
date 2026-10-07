@@ -1,10 +1,12 @@
-import { Controller, Get, Post, Param, Body, UseGuards , Headers } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiHeader } from '@nestjs/swagger';
+import { Controller, Get, Post, Param, Body, UseGuards } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { DisputesService } from './disputes.service';
 import { CreateDisputeDto } from './dto/create-dispute.dto';
 import { ResolveDisputeDto } from './dto/resolve-dispute.dto';
 import { RoleGuard } from '../../common/guards/role.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { CurrentActor } from '../../common/decorators/current-actor.decorator';
+import type { Actor } from '../../common/decorators/current-actor.decorator';
 
 @ApiTags('Disputes')
 @Controller('disputes')
@@ -13,30 +15,30 @@ export class DisputesController {
   constructor(private readonly disputesService: DisputesService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Get all disputes' })
-  findAll(@Headers('user-id') userId?: string, @Headers('role') role?: string) {
-    return this.disputesService.findAll({ id: userId, role });
+  @ApiOperation({ summary: 'Disputes you are party to or arbitrating' })
+  findAll(@CurrentActor() actor: Actor) {
+    return this.disputesService.findAll(actor);
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get dispute by ID' })
-  findOne(@Param('id') id: string, @Headers('user-id') userId?: string, @Headers('role') role?: string) {
-    return this.disputesService.findById(id, { id: userId, role });
+  @ApiOperation({ summary: 'Get a dispute you are party to or arbitrating' })
+  findOne(@Param('id') id: string, @CurrentActor() actor: Actor) {
+    return this.disputesService.findById(id, actor);
   }
 
   @Post()
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
+  @ApiBearerAuth()
   @Roles('client', 'worker')
-  @ApiOperation({ summary: 'Create a dispute' })
-  create(@Body() dto: CreateDisputeDto) {
-    return this.disputesService.create(dto);
+  @ApiOperation({ summary: 'Dispute a milestone of your project (client or hired worker)' })
+  create(@Body() dto: CreateDisputeDto, @CurrentActor() actor: Actor) {
+    return this.disputesService.create(dto, actor);
   }
 
   @Post(':id/resolve')
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
+  @ApiBearerAuth()
   @Roles('expert')
-  @ApiOperation({ summary: 'Resolve a dispute (updates milestone status based on verdict)' })
-  resolve(@Param('id') id: string, @Body() dto: ResolveDisputeDto) {
-    return this.disputesService.resolve(id, dto);
+  @ApiOperation({ summary: 'Give the verdict on a dispute and settle its milestone (assigned reviewer only)' })
+  resolve(@Param('id') id: string, @Body() dto: ResolveDisputeDto, @CurrentActor() actor: Actor) {
+    return this.disputesService.resolve(id, dto, actor);
   }
 }

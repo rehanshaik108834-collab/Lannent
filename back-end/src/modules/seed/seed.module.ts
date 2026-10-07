@@ -1,18 +1,23 @@
-import { Module, forwardRef, NestModule, MiddlewareConsumer, RequestMethod } from '@nestjs/common';
+import {
+  Module,
+  NestModule,
+  MiddlewareConsumer,
+  RequestMethod,
+} from '@nestjs/common';
 import { SeedController } from './seed.controller';
 import { SeedService } from './seed.service';
-import { UsersModule } from '../users/users.module';
-import { TasksModule } from '../tasks/tasks.module';
-import { MilestonesModule } from '../milestones/milestones.module';
-import { ProposalsModule } from '../proposals/proposals.module';
-import { AuditRequestsModule } from '../audit-requests/audit-requests.module';
-import { AuditReportsModule } from '../audit-reports/audit-reports.module';
-import { DisputesModule } from '../disputes/disputes.module';
-import { TransactionsModule } from '../transactions/transactions.module';
-import { ExpertApplicationsModule } from '../expert-applications/expert-applications.module';
-import { NotificationsModule } from '../notifications/notifications.module';
-import { LedgerModule } from '../ledger/ledger.module';
-import { FilesModule } from '../files/files.module';
+import { UsersDataModule } from '../users/users.data.module';
+import { TasksDataModule } from '../tasks/tasks.data.module';
+import { MilestonesDataModule } from '../milestones/milestones.data.module';
+import { ProposalsDataModule } from '../proposals/proposals.data.module';
+import { AuditRequestsDataModule } from '../audit-requests/audit-requests.data.module';
+import { AuditReportsDataModule } from '../audit-reports/audit-reports.data.module';
+import { DisputesDataModule } from '../disputes/disputes.data.module';
+import { TransactionsDataModule } from '../transactions/transactions.data.module';
+import { ExpertApplicationsDataModule } from '../expert-applications/expert-applications.data.module';
+import { NotificationsDataModule } from '../notifications/notifications.data.module';
+import { LedgerCoreModule } from '../ledger/ledger.core.module';
+import { FilesCoreModule } from '../files/files.core.module';
 
 import { RequireAuthMiddleware } from '../../common/middleware/require-auth.middleware';
 import { AdminAuditMiddleware } from '../../common/middleware/admin-audit.middleware';
@@ -20,18 +25,18 @@ import { SeedGuardMiddleware } from '../../common/middleware/seed-guard.middlewa
 
 @Module({
   imports: [
-    forwardRef(() => UsersModule),
-    forwardRef(() => TasksModule),
-    forwardRef(() => MilestonesModule),
-    forwardRef(() => ProposalsModule),
-    forwardRef(() => AuditRequestsModule),
-    forwardRef(() => AuditReportsModule),
-    forwardRef(() => DisputesModule),
-    forwardRef(() => TransactionsModule),
-    forwardRef(() => ExpertApplicationsModule),
-    forwardRef(() => NotificationsModule),
-    forwardRef(() => LedgerModule),
-    forwardRef(() => FilesModule),
+    UsersDataModule,
+    TasksDataModule,
+    MilestonesDataModule,
+    ProposalsDataModule,
+    AuditRequestsDataModule,
+    AuditReportsDataModule,
+    DisputesDataModule,
+    TransactionsDataModule,
+    ExpertApplicationsDataModule,
+    NotificationsDataModule,
+    LedgerCoreModule,
+    FilesCoreModule,
   ],
   controllers: [SeedController],
   providers: [SeedService],

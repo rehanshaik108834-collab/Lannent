@@ -1,7 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { AuditController } from './audit.controller';
 import { AuditService } from './audit.service';
-import { AuditRepository } from './audit.repository';
+import { AuditDataModule } from './audit.data.module';
 
 /**
  * Global so the middleware that already observes every request can record
@@ -9,8 +9,9 @@ import { AuditRepository } from './audit.repository';
  */
 @Global()
 @Module({
+  imports: [AuditDataModule],
   controllers: [AuditController],
-  providers: [AuditService, AuditRepository],
+  providers: [AuditService],
   exports: [AuditService],
 })
 export class AuditModule {}

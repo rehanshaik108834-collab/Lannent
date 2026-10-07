@@ -6,34 +6,23 @@ import 'dotenv/config';
 
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { join } from 'node:path';
+import type { Request, Response, NextFunction } from 'express';
 import { json, urlencoded } from 'express';
 import helmet from 'helmet';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
-import { ResponseInterceptor } from './common/interceptors/response.interceptor';
-import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { configureFrontend } from './http/frontend';
+import {
+  configureClassicFrontend,
+  configureStaticFrontend,
+} from './http/static-frontend';
+import { configureApi } from './configure-api';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // Global prefix
-  app.setGlobalPrefix('api');
-
-  // Serve the frontend from the API.
-  //
-  // The two ran on separate origins only because nothing was serving the
-  // static files — which made every request in the app cross-origin, turned
-  // CORS into a permanent tax, and left a page opened from disk (Origin
-  // "null") unable to talk to the API at all. Served from here they share an
-  // origin, so those requests stop being cross-origin and stop preflighting.
-  //
-  // The API keeps the /api prefix, so nothing collides.
-  app.useStaticAssets(join(__dirname, '..', '..', 'front-end'), {
-    index: ['index.html'],
-    extensions: ['html'],
-  });
+  configureApi(app);
 
   // Rate limiting counts per client IP, and behind a load balancer every user
   // shares the proxy's address — one budget for everyone. TRUST_PROXY tells
@@ -44,8 +33,15 @@ async function bootstrap() {
   const trustProxy = process.env.TRUST_PROXY;
   if (trustProxy) {
     const hops = Number(trustProxy);
-    app.getHttpAdapter().getInstance().set('trust proxy',
-      Number.isFinite(hops) && String(hops) === trustProxy ? hops : trustProxy);
+    app
+      .getHttpAdapter()
+      .getInstance()
+      .set(
+        'trust proxy',
+        Number.isFinite(hops) && String(hops) === trustProxy
+          ? hops
+          : trustProxy,
+      );
   }
 
   // The 100kb express default is tight once a deliverable carries file
@@ -54,10 +50,8 @@ async function bootstrap() {
   app.use(json({ limit: '1mb' }));
   app.use(urlencoded({ extended: true, limit: '1mb' }));
 
-  // Security headers. The API serves JSON and streams file downloads, never
-  // HTML, so the CSP that matters here is the one that stops a downloaded file
-  // being framed or sniffed — contentSecurityPolicy is left off because it
-  // governs documents this server does not serve.
+  // API security headers apply globally. configureFrontend adds the document
+  // CSP to the React shell; Swagger and byte streams retain their own routes.
   app.use(
     helmet({
       contentSecurityPolicy: false,
@@ -78,14 +72,16 @@ async function bootstrap() {
   // explicit list and nothing else.
   const configured = (process.env.CORS_ORIGIN || '')
     .split(',')
-    .map(o => o.trim())
+    .map((o) => o.trim())
     .filter(Boolean);
   const isProduction = process.env.NODE_ENV === 'production';
   const LOOPBACK = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 
   const corsLogger = new Logger('CORS');
   if (isProduction && !configured.length) {
-    throw new Error('CORS_ORIGIN must list the allowed frontend origins in production.');
+    throw new Error(
+      'CORS_ORIGIN must list the allowed frontend origins in production.',
+    );
   }
 
   function originAllowed(origin: string): boolean {
@@ -94,7 +90,10 @@ async function bootstrap() {
   }
 
   app.enableCors({
-    origin: (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => {
+    origin: (
+      origin: string | undefined,
+      cb: (err: Error | null, allow?: boolean) => void,
+    ) => {
       // A same-origin or tool request (curl, a harness) sends no Origin at all.
       if (!origin) return cb(null, true);
       if (originAllowed(origin)) return cb(null, true);
@@ -111,7 +110,7 @@ async function bootstrap() {
     },
     credentials: true,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    allowedHeaders: 'Content-Type, Accept, Authorization, role, user-id, X-Request-Id',
+    allowedHeaders: 'Content-Type, Accept, Authorization, X-Request-Id',
     // Without this the browser can see the response but not the id on it, so
     // a user reporting a problem has no reference to quote.
     exposedHeaders: 'X-Request-Id',
@@ -125,39 +124,45 @@ async function bootstrap() {
   // endpoint", which looks like a broken API rather than a CORS decision.
   // Answering 204 without an allow-origin header lets the browser make the
   // call, which is the layer that should be making it.
-  app.use((req: any, res: any, next: any) => {
+  app.use((req: Request, res: Response, next: NextFunction) => {
     if (req.method !== 'OPTIONS') return next();
     res.statusCode = 204;
     res.setHeader('Content-Length', '0');
     res.end();
   });
 
-  // Global validation pipe (class-validator)
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      transform: true,
-      forbidNonWhitelisted: false,
-      transformOptions: { enableImplicitConversion: true },
-    }),
-  );
-
-  // Global response interceptor
-  app.useGlobalInterceptors(new ResponseInterceptor());
-
-  // Global exception filter
-  app.useGlobalFilters(new HttpExceptionFilter());
+  // Which UI is served at /:
+  //   default            front-end-classic (React port of the original UI);
+  //                      falls back to the original HTML if it is not built
+  //   FRONTEND_UI=static the original HTML pages in front-end/
+  //   FRONTEND_UI=react  the redesigned front-end-react build
+  const mode = process.env.FRONTEND_UI;
+  let uiName: string;
+  if (mode === 'react') {
+    configureFrontend(app);
+    uiName = 'redesigned React';
+  } else if (mode !== 'static' && configureClassicFrontend(app)) {
+    uiName = 'React (original design)';
+  } else {
+    if (mode !== 'static')
+      new Logger('Frontend').warn(
+        'front-end-classic is not built (npm run build in front-end-classic/); serving the original HTML pages instead.',
+      );
+    configureStaticFrontend(app);
+    uiName = 'original HTML';
+  }
 
   // Swagger setup
   const config = new DocumentBuilder()
     .setTitle('Lannent API')
     .setDescription(
       'Complete REST API for the Lannent freelance platform. ' +
-      'Supports Users, Tasks, Milestones, Proposals, Audit Requests, Audit Reports, ' +
-      'Disputes, Transactions, Expert Applications, and Notifications. ' +
-      'Uses in-memory storage with seed data. ' +
-      'Include "role" and "user-id" headers for RBAC.',
+        'Supports Users, Tasks, Milestones, Proposals, Audit Requests, Audit Reports, ' +
+        'Disputes, Transactions, Expert Applications, and Notifications. ' +
+        'Uses in-memory storage with seed data. ' +
+        'Use an Authorization: Bearer token for authenticated requests.',
     )
+    .addBearerAuth()
     .setVersion('1.0')
     .build();
 
@@ -171,8 +176,12 @@ async function bootstrap() {
   // says nothing about what to do. Answer the actual question instead.
   try {
     await app.listen(port);
-  } catch (error: any) {
-    if (error?.code === 'EADDRINUSE') {
+  } catch (error: unknown) {
+    if (
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'EADDRINUSE'
+    ) {
       console.error(
         `\n✖ Port ${port} is already in use — most likely another copy of this server.\n\n` +
           `  See what is holding it:   lsof -i :${port}\n` +
@@ -185,14 +194,18 @@ async function bootstrap() {
   }
 
   console.log(`\n🚀 Lannent API running on http://localhost:${port}`);
-  console.log(`   The app is served here too — open http://localhost:${port}`);
+  console.log(
+    `   The ${uiName} UI is served here — open http://localhost:${port}`,
+  );
   console.log(`📚 Swagger UI: http://localhost:${port}/api-docs\n`);
 }
 
-bootstrap().catch((error) => {
+bootstrap().catch((error: unknown) => {
   // Anything that goes wrong before listen — a missing JWT_SECRET in
   // production, an unreadable static directory — should print one clear line,
   // not an unhandled rejection.
-  console.error(`\n✖ Lannent API failed to start: ${error?.message || error}\n`);
+  console.error(
+    `\n✖ Lannent API failed to start: ${error instanceof Error ? error.message : String(error)}\n`,
+  );
   process.exit(1);
 });

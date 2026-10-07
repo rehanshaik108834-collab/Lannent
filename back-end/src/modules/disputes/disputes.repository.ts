@@ -1,3 +1,4 @@
+import type { DisputeRecord } from './disputes.types';
 import { Injectable } from '@nestjs/common';
 import { SEED_DISPUTES } from '../seed/seed.data';
 
@@ -9,34 +10,34 @@ import { SEED_DISPUTES } from '../seed/seed.data';
  */
 @Injectable()
 export class DisputesRepository {
-  private disputes: any[] = JSON.parse(JSON.stringify(SEED_DISPUTES));
+  private disputes: DisputeRecord[] = structuredClone(SEED_DISPUTES);
   private counter = 100;
 
   generateId(): string {
-    return 'd_' + Date.now() + '_' + (this.counter++);
+    return 'd_' + Date.now() + '_' + this.counter++;
   }
 
-  findAll(): any[] {
+  findAll(): DisputeRecord[] {
     return this.disputes;
   }
 
-  findById(id: string): any | null {
-    return this.disputes.find(d => d.id === id) || null;
+  findById(id: string): DisputeRecord | null {
+    return this.disputes.find((d) => d.id === id) || null;
   }
 
-  insert(dispute: any): any {
+  insert(dispute: DisputeRecord): DisputeRecord {
     this.disputes.push(dispute);
     return dispute;
   }
 
-  update(id: string, partial: any): any | null {
-    const dispute = this.disputes.find(d => d.id === id);
+  update(id: string, partial: Partial<DisputeRecord>): DisputeRecord | null {
+    const dispute = this.disputes.find((d) => d.id === id);
     if (!dispute) return null;
     Object.assign(dispute, partial);
     return dispute;
   }
 
   resetToSeed(): void {
-    this.disputes = JSON.parse(JSON.stringify(SEED_DISPUTES));
+    this.disputes = structuredClone(SEED_DISPUTES);
   }
 }

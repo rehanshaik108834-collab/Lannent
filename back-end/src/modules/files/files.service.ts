@@ -3,17 +3,22 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
-  Inject,
-  forwardRef,
 } from '@nestjs/common';
 import { existsSync, unlinkSync, readdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { FilesRepository } from './files.repository';
 import { UPLOAD_DIR, ensureUploadDir } from './upload.config';
-import { TasksService } from '../tasks/tasks.service';
-import { AuditRequestsService } from '../audit-requests/audit-requests.service';
-import { canViewTask, canViewAnyRecord, canDeleteAnyFile } from '../../common/guards/viewer.util';
+import { TasksAccessService } from '../tasks/tasks-access.service';
+import { AuditRequestsRepository } from '../audit-requests/audit-requests.repository';
+import {
+  canViewTask,
+  canViewAnyRecord,
+  canDeleteAnyFile,
+} from '../../common/guards/viewer.util';
 import { AppLoggerService } from '../../common/logging/app-logger.service';
+import { ROLES } from '../../common/constants/roles';
+import { MilestonesRepository } from '../milestones/milestones.repository';
+import { ExpertApplicationsRepository } from '../expert-applications/expert-applications.repository';
 
 export interface Viewer {
   id?: string;
@@ -30,16 +35,42 @@ export interface Viewer {
 export class FilesService {
   constructor(
     private readonly filesRepository: FilesRepository,
-    @Inject(forwardRef(() => TasksService)) private readonly tasks: TasksService,
-    @Inject(forwardRef(() => AuditRequestsService)) private readonly auditRequests: AuditRequestsService,
+    private readonly tasks: TasksAccessService,
+    private readonly auditRequests: AuditRequestsRepository,
     private readonly log: AppLoggerService,
+    private readonly milestones: MilestonesRepository,
+    private readonly applications: ExpertApplicationsRepository,
   ) {
     ensureUploadDir();
   }
 
-  /** Records an uploaded file and returns the reference a deliverable stores. */
-  create(file: any, viewer: Viewer, meta?: { taskId?: string; milestoneId?: string; purpose?: string }) {
-    if (!file) throw new BadRequestException('No file was received. Send it in the "file" field.');
+  /**
+   * Records an uploaded file and returns the reference a deliverable stores.
+   *
+   * A signed-in upload that names a project must come from someone who can
+   * see that project, and a named milestone must belong to it, so files cannot
+   * be planted on other people's work. The application purpose is reserved for
+   * the public application route.
+   */
+  create(
+    file: any,
+    viewer: Viewer,
+    meta?: { taskId?: string; milestoneId?: string; purpose?: string },
+  ) {
+    if (!file)
+      throw new BadRequestException(
+        'No file was received. Send it in the "file" field.',
+      );
+    if (viewer.id) {
+      try {
+        this.assertCanAttach(viewer, meta);
+      } catch (refusal) {
+        // multer has already written the bytes; a refused upload must not
+        // leave an unreachable file behind.
+        this.safeUnlink(join(UPLOAD_DIR, basename(file.filename)));
+        throw refusal;
+      }
+    }
 
     const record = {
       id: this.filesRepository.generateId(),
@@ -55,7 +86,10 @@ export class FilesService {
     };
     this.filesRepository.insert(record);
 
-    this.log.log('files.upload', `${record.id} "${record.name}" ${record.size}b ${record.mime}`);
+    this.log.log(
+      'files.upload',
+      `${record.id} "${record.name}" ${record.size}b ${record.mime}`,
+    );
     return this.toRef(record);
   }
 
@@ -96,10 +130,85 @@ export class FilesService {
     if (!existsSync(full)) {
       // The metadata is in memory and the bytes are on disk, so these can drift
       // — a restart with a cleared uploads directory lands here.
-      this.log.warn('files.read', `record ${id} points at a missing file (${record.storedName})`);
-      throw new NotFoundException('That file is no longer stored on the server.');
+      this.log.warn(
+        'files.read',
+        `record ${id} points at a missing file (${record.storedName})`,
+      );
+      throw new NotFoundException(
+        'That file is no longer stored on the server.',
+      );
     }
     return { path: full, record };
+  }
+
+  private assertCanAttach(
+    viewer: Viewer,
+    meta?: { taskId?: string; milestoneId?: string; purpose?: string },
+  ) {
+    if (
+      meta?.purpose &&
+      !['deliverable', 'attachment'].includes(meta.purpose)
+    ) {
+      throw new BadRequestException(
+        'purpose must be "deliverable" or "attachment".',
+      );
+    }
+    if (meta?.milestoneId && !meta.taskId) {
+      throw new BadRequestException(
+        'Name the project (taskId) the milestone belongs to.',
+      );
+    }
+    if (!meta?.taskId) return;
+    const task = this.tasks.findById(meta.taskId);
+    // Participants only: the client, the hired worker, or an engaged reviewer.
+    // Being able to *see* an open project is not enough to attach to it, and
+    // oversight roles read files; they do not add them.
+    const engagedReviewers =
+      this.safe(() =>
+        this.auditRequests
+          .findAll({ taskId: task.id })
+          .map((ar: any) => ar.expertId),
+      ) || [];
+    const participant =
+      task.clientId === viewer.id ||
+      task.workerId === viewer.id ||
+      engagedReviewers.includes(viewer.id);
+    if (!participant) {
+      throw new ForbiddenException(
+        'You can only attach files to projects you are working on.',
+      );
+    }
+    if (meta.milestoneId) {
+      const milestones = this.milestones;
+      const ms = milestones.findById(meta.milestoneId);
+      if (!ms || ms.taskId !== task.id) {
+        throw new BadRequestException(
+          'That milestone does not belong to this project.',
+        );
+      }
+    }
+  }
+
+  /**
+   * True for a document uploaded through the public application route and
+   * referenced by an expert application. Only such files are opened to intake;
+   * a project file named in an application does not qualify (applications
+   * reject such references when they are submitted).
+   */
+  private isApplicationDocument(record: any): boolean {
+    if (
+      record.purpose !== 'expert-application' ||
+      record.taskId ||
+      record.uploadedBy
+    )
+      return false;
+    const applications = this.applications;
+    return applications
+      .findAll()
+      .some(
+        (a: any) =>
+          a.resumeFile?.id === record.id || a.certificateFile?.id === record.id,
+      );
   }
 
   /**
@@ -112,6 +221,10 @@ export class FilesService {
    */
   private canView(record: any, viewer: Viewer): boolean {
     if (canViewAnyRecord(viewer.role)) return true;
+    // Intake reviews applications, so it reads their résumés and certificates,
+    // and nothing else.
+    if (viewer.role === ROLES.INTAKE_ADMIN)
+      return this.isApplicationDocument(record);
     if (record.uploadedBy && record.uploadedBy === viewer.id) return true;
     if (!record.taskId) return false;
     const task = this.safe(() => this.tasks.findById(record.taskId));
@@ -119,21 +232,30 @@ export class FilesService {
     // The reviewer engaged on this project is not one of its participants, but
     // auditing the work means opening the files that are the work. Without
     // this they were handed a deliverable they could not download.
-    const reviewers = this.safe(() =>
-      this.auditRequests
-        .findAll({ taskId: record.taskId })
-        .map((ar: any) => ar.expertId)
-        .filter(Boolean),
-    ) || [];
+    const reviewers =
+      this.safe(() =>
+        this.auditRequests
+          .findAll({ taskId: record.taskId })
+          .map((ar: any) => ar.expertId)
+          .filter(Boolean),
+      ) || [];
 
-    return canViewTask(viewer.id, viewer.role, task, record.uploadedBy, ...reviewers);
+    return canViewTask(
+      viewer.id,
+      viewer.role,
+      task,
+      record.uploadedBy,
+      ...reviewers,
+    );
   }
 
   remove(id: string, viewer: Viewer) {
     const record = this.findById(id);
     const owns = record.uploadedBy && record.uploadedBy === viewer.id;
     if (!owns && !canDeleteAnyFile(viewer.role)) {
-      throw new ForbiddenException('Only the person who uploaded a file, or operations staff, can delete it.');
+      throw new ForbiddenException(
+        'Only the person who uploaded a file, or operations staff, can delete it.',
+      );
     }
     this.filesRepository.remove(id);
     this.safeUnlink(join(UPLOAD_DIR, basename(record.storedName)));
@@ -159,7 +281,11 @@ export class FilesService {
         removed++;
       }
     }
-    if (removed) this.log.log('files.sweep', `removed ${removed} orphaned file(s) from uploads/`);
+    if (removed)
+      this.log.log(
+        'files.sweep',
+        `removed ${removed} orphaned file(s) from uploads/`,
+      );
     return { removed };
   }
 

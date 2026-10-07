@@ -1,0 +1,38 @@
+import type { AuditStatus } from './audit-request.constants';
+export type AuditOffer = {
+  id: string;
+  offeredBy: string;
+  amount: number;
+  note: string;
+  status: string;
+  createdAt: string;
+};
+export type AuditRequestRecord = {
+  id: string;
+  taskId: string;
+  clientId: string;
+  createdAt: string;
+  kind: string;
+  status: AuditStatus;
+  expertId: string | null;
+  workerId?: string | null;
+  milestoneId?: string | null;
+  disputeId?: string | null;
+  agreedAmount: number | null;
+  offers: AuditOffer[];
+  auditedMilestoneIds: string[];
+  feePaid?: boolean;
+  paidAt?: string | null;
+  acceptedAt?: string;
+  fundedAt?: string;
+  severity?: string;
+  project?: string;
+  worker?: string;
+  milestone?: string;
+  dueDate?: string | null;
+  declinedAt?: string;
+  declineReason?: string;
+  expertPayout?: number;
+  completedAt?: string;
+  reportSubmittedAt?: string;
+};

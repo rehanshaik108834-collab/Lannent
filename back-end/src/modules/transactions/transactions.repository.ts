@@ -1,3 +1,4 @@
+import type { TransactionRecord } from './transactions.types';
 import { Injectable } from '@nestjs/common';
 import { SEED_TRANSACTIONS } from '../seed/seed.data';
 
@@ -9,26 +10,29 @@ import { SEED_TRANSACTIONS } from '../seed/seed.data';
  */
 @Injectable()
 export class TransactionsRepository {
-  private transactions: any[] = JSON.parse(JSON.stringify(SEED_TRANSACTIONS));
+  private transactions: TransactionRecord[] =
+    structuredClone(SEED_TRANSACTIONS);
   private counter = 100;
 
   generateId(): string {
-    return 'tx_' + Date.now() + '_' + (this.counter++);
+    return 'tx_' + Date.now() + '_' + this.counter++;
   }
 
-  findAll(query?: { userId?: string }): any[] {
+  findAll(query?: { userId?: string }): TransactionRecord[] {
     if (query?.userId) {
-      return this.transactions.filter(t => t.fromId === query.userId || t.toId === query.userId);
+      return this.transactions.filter(
+        (t) => t.fromId === query.userId || t.toId === query.userId,
+      );
     }
     return this.transactions;
   }
 
-  insert(transaction: any): any {
+  insert(transaction: TransactionRecord): TransactionRecord {
     this.transactions.push(transaction);
     return transaction;
   }
 
   resetToSeed(): void {
-    this.transactions = JSON.parse(JSON.stringify(SEED_TRANSACTIONS));
+    this.transactions = structuredClone(SEED_TRANSACTIONS);
   }
 }

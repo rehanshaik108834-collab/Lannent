@@ -22,3 +22,15 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Test artifacts and local configuration
+coverage/
+.vitest/
+playwright-report/
+test-results/
+.env
+.env.*
+!.env.example
+
+test-results-staff/
+test-results-cutover/

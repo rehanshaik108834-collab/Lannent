@@ -1,8 +1,8 @@
-import { Module, forwardRef, Global } from '@nestjs/common';
+import { Module, Global } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
-import { UsersModule } from '../users/users.module';
+import { UsersCoreModule } from '../users/users.core.module';
 import { JWT_SECRET, JWT_EXPIRES_IN } from '../../common/security/jwt.config';
 
 /**
@@ -12,7 +12,7 @@ import { JWT_SECRET, JWT_EXPIRES_IN } from '../../common/security/jwt.config';
 @Global()
 @Module({
   imports: [
-    forwardRef(() => UsersModule),
+    UsersCoreModule,
     JwtModule.register({
       secret: JWT_SECRET,
       // jsonwebtoken types the duration as a template literal union; the value

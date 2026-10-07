@@ -7,8 +7,9 @@ export class CreateOfferDto {
   amount: number;
 
   @ApiProperty({ example: 'client', enum: ['client', 'expert'] })
-  @IsString()
-  offeredBy: string;
+  /** Optional and redundant: your side is derived from your account. A mismatch is rejected. */
+  @IsOptional() @IsString()
+  offeredBy?: string;
 
   @ApiPropertyOptional({ example: 'Covers the payment flow and the auth model.' })
   @IsOptional() @IsString()
@@ -17,8 +18,9 @@ export class CreateOfferDto {
 
 export class AcceptAuditDto {
   @ApiProperty({ example: 'u3', description: 'Expert taking the engagement' })
-  @IsString()
-  expertId: string;
+  /** Optional and redundant: the reviewer is the signed-in account. A mismatch is rejected. */
+  @IsOptional() @IsString()
+  expertId?: string;
 }
 
 export class DeclineAuditDto {

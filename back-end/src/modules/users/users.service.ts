@@ -1,6 +1,15 @@
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { CreateUserDto } from './dto/create-user.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateUserDto, PROTECTED_PROFILE_FIELDS } from './dto/update-user.dto';
+import { stripUnchangedProtectedFields } from '../../common/policies/protected-fields';
+import {
+  BASE_PROFILE_FIELDS,
+  INTERNAL_SUB_FIELDS,
+  ROLE_PROFILE_FIELDS,
+  assertProfileFieldsFor,
+} from './profile-contract';
+import type { Actor } from '../../common/decorators/current-actor.decorator';
+import { ROLES } from '../../common/constants/roles';
 import { UsersRepository } from './users.repository';
 import { round2 } from '../ledger/fee-config';
 import { SELF_SERVICE_ROLES } from '../../common/constants/roles';
@@ -81,7 +90,27 @@ export class UsersService {
     return this.insertUser(dto);
   }
 
-  private insertUser(dto: CreateUserDto) {
+  /**
+   * Creates the expert account for an approved application, with the password
+   * the applicant chose (already hashed when they applied). There is no
+   * default password: an application without one cannot become an account.
+   */
+  createExpertFromApplication(app: {
+    name: string;
+    email: string;
+    passwordHash: string;
+    specialization?: string;
+  }) {
+    if (!app.passwordHash) {
+      throw new BadRequestException('The application has no chosen password; no account was created.');
+    }
+    return this.insertUser(
+      { name: app.name, email: app.email, password: '', role: 'expert', specialization: app.specialization },
+      app.passwordHash,
+    );
+  }
+
+  private insertUser(dto: CreateUserDto, passwordHash?: string) {
     const existing = this.findByEmail(dto.email);
     if (existing) throw new BadRequestException('A user with this email already exists.');
 
@@ -100,7 +129,7 @@ export class UsersService {
       id,
       name: dto.name,
       email: dto.email,
-      password: hashPassword(dto.password),
+      password: passwordHash ?? hashPassword(dto.password),
       role: dto.role,
       avatar: dto.avatar || initials,
       avatarColor: dto.avatarColor || colors[Math.floor(Math.random() * colors.length)],
@@ -137,40 +166,78 @@ export class UsersService {
     return this.usersRepository.findById(id);
   }
 
-  update(id: string, dto: UpdateUserDto) {
-    const existing = this.usersRepository.findById(id);
-    if (!existing) throw new NotFoundException(`User with id "${id}" not found`);
+  /**
+   * Self-service profile edit. The account holder edits their own profile;
+   * operations may correct another account's profile fields. Identity,
+   * status, balances and reputation counters cannot change here.
+   */
+  updateProfile(id: string, dto: UpdateUserDto, actor: Actor) {
+    if (actor.id !== id && actor.role !== ROLES.SUPERUSER) {
+      throw new ForbiddenException('You can only edit your own profile.');
+    }
+    const existing = this.findById(id);
+    const changes: Record<string, unknown> = stripUnchangedProtectedFields(
+      dto, existing, PROTECTED_PROFILE_FIELDS,
+      (field) => `"${field}" cannot be changed through a profile update.`,
+    );
+    assertProfileFieldsFor(existing.role, changes);
+    // The company name shown in directories follows the company details.
+    const details = changes.companyDetails as { name?: string } | undefined;
+    if (details?.name !== undefined && changes.company === undefined) changes.company = details.name;
+    return this.update(id, changes);
+  }
 
-    // ── Update base USERS fields ────────────────────────────────────────
-    const baseUpdates: any = {};
-    if (dto.name !== undefined) baseUpdates.name = dto.name;
-    // email, password and role are not writable through a general profile
-    // update — each has its own path, so a profile edit cannot change identity.
-    if (dto.avatar !== undefined) baseUpdates.avatar = dto.avatar;
-    if (dto.avatarColor !== undefined) baseUpdates.avatarColor = dto.avatarColor;
-    if (dto.status !== undefined) baseUpdates.status = dto.status;
-    if (dto.walletBalance !== undefined) baseUpdates.walletBalance = dto.walletBalance;
+  /** Operations-only account status change. An operator cannot suspend themselves. */
+  setStatus(id: string, status: 'active' | 'suspended', actor: Actor) {
+    if (actor.role !== ROLES.SUPERUSER) {
+      throw new ForbiddenException('Only operations can change an account\'s status.');
+    }
+    if (actor.id === id) throw new BadRequestException('You cannot change your own account status.');
+    this.findById(id);
+    return this.update(id, { status });
+  }
+
+  /** Operations-only deletion. An operator cannot delete their own account. */
+  deleteAccount(id: string, actor: Actor) {
+    if (actor.id === id) throw new BadRequestException('You cannot delete your own account.');
+    return this.delete(id);
+  }
+
+  /**
+   * Internal write used by trusted services (e.g. reputation counters after a
+   * paid audit) and by the operations methods above. Never wire this directly
+   * to a request body.
+   */
+  update(id: string, dto: Record<string, any>) {
+    const base = this.usersRepository.getRawBase(id);
+    if (!base) throw new NotFoundException(`User with id "${id}" not found`);
+
+    // Base fields go on the account; role fields and platform counters go on
+    // the role's profile record. Identity, credentials and the balance are
+    // never written here: email/role/password have no update path, and only
+    // addToWallet/deductFromWallet (called by LedgerService) move a balance.
+    const baseFields: string[] = [...BASE_PROFILE_FIELDS, 'status'];
+    const roleFields: string[] = [...(ROLE_PROFILE_FIELDS[base.role] ?? []), ...INTERNAL_SUB_FIELDS];
+    const baseUpdates: Record<string, unknown> = {};
+    const subUpdates: Record<string, unknown> = {};
+    for (const [field, value] of Object.entries(dto)) {
+      if (value === undefined) continue;
+      if (baseFields.includes(field)) baseUpdates[field] = value;
+      else if (roleFields.includes(field)) subUpdates[field] = value;
+    }
     this.usersRepository.updateBase(id, baseUpdates);
 
-    // ── Update role-specific sub-table fields ───────────────────────────
-    const base = this.usersRepository.getRawBase(id);
-    if (base?.role === 'client') {
-      let sub = this.usersRepository.findClientSub(id);
-      if (!sub) { this.usersRepository.insertClient({ userId: id, company: '', location: '' }); sub = this.usersRepository.findClientSub(id); }
-      if (dto.company !== undefined) sub.company = dto.company;
-      if (dto.location !== undefined) sub.location = dto.location;
-    } else if (base?.role === 'worker') {
-      let sub = this.usersRepository.findWorkerSub(id);
-      if (!sub) { this.usersRepository.insertWorker({ userId: id, location: '', skills: [], rating: 0, completedProjects: 0 }); sub = this.usersRepository.findWorkerSub(id); }
-      if (dto.location !== undefined) sub.location = dto.location;
-      if (dto.skills !== undefined) sub.skills = dto.skills;
-      if (dto.rating !== undefined) sub.rating = dto.rating;
-      if (dto.completedProjects !== undefined) sub.completedProjects = dto.completedProjects;
-    } else if (base?.role === 'expert') {
-      let sub = this.usersRepository.findExpertSub(id);
-      if (!sub) { this.usersRepository.insertExpert({ userId: id, specialization: '', reviewsDone: 0 }); sub = this.usersRepository.findExpertSub(id); }
-      if (dto.specialization !== undefined) sub.specialization = dto.specialization;
-      if (dto.reviewsDone !== undefined) sub.reviewsDone = dto.reviewsDone;
+    if (Object.keys(subUpdates).length && ROLE_PROFILE_FIELDS[base.role]) {
+      let sub = this.usersRepository.subFor(base);
+      if (!sub) {
+        const fresh = { userId: id };
+        if (base.role === 'client') this.usersRepository.insertClient(fresh);
+        if (base.role === 'worker') this.usersRepository.insertWorker(fresh);
+        if (base.role === 'expert') this.usersRepository.insertExpert(fresh);
+        sub = this.usersRepository.subFor(base);
+      }
+      if (!sub) throw new Error(`Could not create the ${base.role} profile for ${id}.`);
+      Object.assign(sub, subUpdates);
     }
 
     return this.usersRepository.findById(id);

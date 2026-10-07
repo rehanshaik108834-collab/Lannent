@@ -1,13 +1,35 @@
-import { Injectable, NotFoundException, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { CreateDisputeDto } from './dto/create-dispute.dto';
 import { ResolveDisputeDto } from './dto/resolve-dispute.dto';
 import { DisputesRepository } from './disputes.repository';
 import { MilestonesService } from '../milestones/milestones.service';
-import { TasksService } from '../tasks/tasks.service';
+import { SETTLEMENT_STORES } from '../ledger/settlement-stores';
+import { TasksAccessService } from '../tasks/tasks-access.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { canViewTask, canViewAnyRecord } from '../../common/guards/viewer.util';
 import { AuditRequestsService } from '../audit-requests/audit-requests.service';
 import { AppLoggerService } from '../../common/logging/app-logger.service';
+import { Actor } from '../../common/decorators/current-actor.decorator';
+import { UnitOfWork } from '../../common/unit-of-work/unit-of-work';
+import { ProjectTerminationService } from '../termination/project-termination.service';
+import {
+  formatInr,
+  fromPaise,
+  splitInHalf,
+  toPaise,
+} from '../../common/money/inr';
+import { UsersRepository } from '../users/users.repository';
+import { MilestonesRepository } from '../milestones/milestones.repository';
+import { AuditRequestsRepository } from '../audit-requests/audit-requests.repository';
+import { AUDIT_STATUS, NEGOTIABLE } from '../audit-requests/audit-request.constants';
+
+export type DisputeVerdict = 'client-favour' | 'worker-favour' | 'split';
 
 /**
  * DisputesService — Business Logic Layer
@@ -19,11 +41,15 @@ import { AppLoggerService } from '../../common/logging/app-logger.service';
 export class DisputesService {
   constructor(
     private readonly disputesRepository: DisputesRepository,
-    @Inject(forwardRef(() => MilestonesService)) private milestonesService: MilestonesService,
-    @Inject(forwardRef(() => TasksService)) private tasksService: TasksService,
-    @Inject(forwardRef(() => LedgerService)) private ledger: LedgerService,
-    @Inject(forwardRef(() => AuditRequestsService)) private auditRequests: AuditRequestsService,
+    private milestonesService: MilestonesService,
+    private tasksService: TasksAccessService,
+    private ledger: LedgerService,
+    private auditRequests: AuditRequestsService,
     private readonly log: AppLoggerService,
+    private readonly uow: UnitOfWork,
+    private readonly users: UsersRepository,
+    private readonly termination: ProjectTerminationService,
+    private readonly engagements: AuditRequestsRepository,
   ) {}
 
   findAll(viewer?: { id?: string; role?: string }) {
@@ -46,141 +72,273 @@ export class DisputesService {
   }
 
   private canView(d: any, viewer: { id?: string; role?: string }): boolean {
-    const task = d.taskId ? this.safe(() => this.tasksService.findById(d.taskId)) : null;
-    return canViewTask(viewer.id, viewer.role, task, d.expertId, d.raisedBy, d.againstId);
+    const task = d.taskId
+      ? this.safe(() => this.tasksService.findById(d.taskId))
+      : null;
+    return canViewTask(
+      viewer.id,
+      viewer.role,
+      task,
+      d.expertId,
+      d.raisedBy,
+      d.againstId,
+    );
   }
 
   private safe<T>(fn: () => T): T | null {
-    try { return fn(); } catch { return null; }
+    try {
+      return fn();
+    } catch {
+      return null;
+    }
   }
 
-  create(dto: CreateDisputeDto) {
-    // Check the reviewer before recording anything. The engagement below is
-    // best-effort, so an unassignable reviewer used to leave a dispute stored
-    // with an expertId that could never take the case — no arbitration, and
-    // nothing on screen to say why.
-    if (dto.expertId) {
-      const task = this.safe(() => this.tasksService.findById(dto.taskId));
-      this.auditRequests.assertAssignableExpert(dto.expertId, task?.category);
+  /**
+   * A party to the project (its client or hired worker) disputes one of its
+   * milestones. The raiser is the actor and the other party is derived from
+   * the project. Body identity fields that disagree are rejected.
+   *
+   * The dispute, the milestone's frozen status and the arbitration engagement
+   * are recorded together. Opening the engagement stays best-effort: a
+   * dispute must exist even if no reviewer can be engaged yet.
+   */
+  create(dto: CreateDisputeDto, actor: Actor) {
+    const task = this.tasksService.findById(dto.taskId);
+    const isClient = task.clientId === actor.id;
+    if (!isClient && task.workerId !== actor.id) {
+      throw new ForbiddenException(
+        "Only the project's client or hired worker can raise a dispute about it.",
+      );
+    }
+    if (dto.raisedBy && dto.raisedBy !== actor.id) {
+      throw new BadRequestException('raisedBy must be your own account.');
+    }
+    const againstId = isClient ? task.workerId : task.clientId;
+    if (!againstId)
+      throw new ConflictException(
+        'Nobody has been hired on this project, so there is no one to dispute with.',
+      );
+    if (dto.againstId && dto.againstId !== againstId) {
+      throw new BadRequestException(
+        'againstId must be the other party on this project.',
+      );
     }
 
-    const dispute = {
+    const ms = dto.milestoneId
+      ? this.milestonesService.findById(dto.milestoneId)
+      : null;
+    if (ms) {
+      if (ms.taskId !== task.id)
+        throw new BadRequestException(
+          'That milestone does not belong to this project.',
+        );
+      if (['completed', 'cancelled'].includes(ms.status)) {
+        throw new ConflictException(
+          `That milestone is already ${ms.status}; there is nothing left to dispute.`,
+        );
+      }
+      const active = this.disputesRepository
+        .findAll()
+        .find((d: any) => d.milestoneId === ms.id && d.status !== 'resolved');
+      if (active)
+        throw new ConflictException(
+          `That milestone is already under dispute (${active.id}).`,
+        );
+    }
+    // Check the reviewer before recording anything, so a dispute never stores
+    // an expertId that could not take the case.
+    if (dto.expertId)
+      this.auditRequests.assertAssignableExpert(dto.expertId, task.category);
+
+    const users = this.users;
+    const dispute: any = {
       id: this.disputesRepository.generateId(),
+      taskId: task.id,
+      milestoneId: ms?.id || undefined,
+      raisedBy: actor.id,
+      raisedByName: users.findById(actor.id)?.name,
+      againstId,
+      againstName: users.findById(againstId)?.name,
+      reason: dto.reason,
+      amount: ms ? formatInr(ms.budget) : dto.amount,
+      project: task.title,
+      milestone: ms?.title || dto.milestone,
+      expertId: dto.expertId || null,
       status: 'open',
-      expertId: null,
       verdict: null,
       resolution: null,
       createdAt: new Date().toISOString().slice(0, 10),
       resolvedAt: null,
-      milestoneId: dto.milestoneId || null,
-      ...dto,
     };
-    this.disputesRepository.insert(dispute);
 
-    // If milestone exists, set it to disputed
-    if (dto.milestoneId) {
-      try {
-        this.milestonesService.update(dto.milestoneId, { status: 'disputed' });
-      } catch (e) {
-        // Swallowing is right — the dispute is recorded either way — but a
-        // milestone left un-flagged is a real inconsistency to know about.
-        this.log.warn('disputes.create', `could not flag milestone ${dto.milestoneId} as disputed`, e);
-      }
+    return this.uow.run(
+      [DisputesRepository, MilestonesRepository, AuditRequestsRepository],
+      () => {
+        this.disputesRepository.insert(dispute);
+        // Freezes approval and payout of this milestone until the verdict.
+        if (ms) this.milestonesService.update(ms.id, { status: 'disputed' });
+
+        try {
+          const engagement = this.auditRequests.create({
+            kind: 'dispute-audit',
+            taskId: task.id,
+            milestoneId: dispute.milestoneId || undefined,
+            clientId: task.clientId,
+            workerId: task.workerId || undefined,
+            disputeId: dispute.id,
+            // Assigned to the reviewer the raiser chose; no other reviewer sees it.
+            expertId: dispute.expertId || undefined,
+            category: task.category,
+            severity: 'High',
+            project: task.title,
+            milestone: dispute.milestone,
+            status: 'preview-sent',
+          });
+          this.disputesRepository.update(dispute.id, {
+            auditRequestId: engagement.id,
+          });
+        } catch (e) {
+          this.log.warn(
+            'disputes.create',
+            `dispute ${dispute.id} recorded without an audit engagement (task ${task.id}, reviewer ${dispute.expertId})`,
+            e,
+          );
+        }
+        return this.disputesRepository.findById(dispute.id);
+      },
+    );
+  }
+
+  /**
+   * Records the assigned reviewer's verdict and settles the disputed milestone.
+   *
+   *  - client-favour: the money stays in escrow and the work goes back to the
+   *    worker for revision. The client approves the revised work as usual.
+   *  - worker-favour: the milestone is paid once, net of the worker's fee.
+   *  - split: the worker gets half the milestone rounded down to the paisa
+   *    (fees apply to that share only); the client gets the rest back.
+   *
+   * Verdict, money movement, milestone status and project progress commit
+   * together; if any step fails, nothing changes. Repeating the recorded
+   * verdict returns it without moving money; a different verdict is refused.
+   */
+  resolve(id: string, dto: ResolveDisputeDto, actor: Actor) {
+    const dispute = this.findById(id);
+    if (!dispute.expertId) {
+      throw new ConflictException(
+        'No reviewer is assigned to this dispute yet.',
+      );
     }
-
-    // Open an audit engagement so an expert can preview the claim, agree a fee
-    // and be paid for arbitrating it. Best-effort: a dispute must still be
-    // recorded even if the engagement cannot be opened.
-    try {
-      const task = this.tasksService.findById(dto.taskId);
-      const auditRequest = this.auditRequests.create({
-        kind: 'dispute-audit',
-        taskId: dto.taskId,
-        milestoneId: dto.milestoneId,
-        clientId: task.clientId,
-        workerId: task.workerId,
-        disputeId: dispute.id,
-        // Assigned to the reviewer the client chose; no other reviewer sees it.
-        expertId: dto.expertId,
-        category: task.category,
-        severity: 'High',
-        project: task.title,
-        milestone: dto.milestone,
-        status: 'preview-sent',
-      });
-      (dispute as any).auditRequestId = auditRequest.id;
-    } catch (e) {
-      // The dispute stands, but with no engagement no reviewer can be paid to
-      // arbitrate it — it would otherwise sit unassigned with nothing logged.
-      this.log.warn(
-        'disputes.create',
-        `dispute ${dispute.id} recorded without an audit engagement (task ${dto.taskId}, reviewer ${dto.expertId})`,
-        e,
+    if (actor.id !== dispute.expertId) {
+      throw new ForbiddenException(
+        'Only the reviewer assigned to this dispute can give its verdict.',
+      );
+    }
+    if (dto.expertId && dto.expertId !== actor.id) {
+      throw new BadRequestException(
+        'The expertId sent does not match the signed-in reviewer.',
       );
     }
 
-    return dispute;
-  }
-
-  resolve(id: string, dto: ResolveDisputeDto) {
-    const dispute = this.findById(id);
-    dispute.status = 'resolved';
-    dispute.expertId = dto.expertId;
-    dispute.verdict = dto.verdict;
-    dispute.resolution = dto.resolution;
-    dispute.resolvedAt = new Date().toISOString().slice(0, 10);
-
-    // Move the money the verdict implies. Before this, resolving a dispute
-    // changed a status and nothing else — even though the seeded resolution text
-    // claimed escrow had been released.
-    let settlement: any = null;
-    if (dispute.milestoneId) {
-      const ms = this.milestonesService.findById(dispute.milestoneId);
-      const task = this.tasksService.findById(dispute.taskId);
-
-      if (dto.verdict === 'worker-favour') {
-        settlement = this.ledger.releaseMilestone({
-          milestoneId: ms.id,
-          taskId: task.id,
-          clientId: task.clientId,
-          workerId: ms.workerId,
-          amount: ms.budget,
-          description: `Dispute resolved in worker's favour — ${ms.title}`,
-        });
-        this.milestonesService.update(dispute.milestoneId, { status: 'completed' });
-        this.milestonesService.checkTaskCompletion(dispute.taskId);
-      } else if (dto.verdict === 'client-favour') {
-        settlement = this.ledger.refundToClient({
-          taskId: task.id,
-          clientId: task.clientId,
-          amount: ms.budget,
-          reason: `Dispute resolved in client's favour — ${ms.title}`,
-        });
-        this.milestonesService.update(dispute.milestoneId, { status: 'revision-needed' });
-      } else if (dto.verdict === 'split') {
-        // Half to the worker, half back to the client.
-        const half = Math.round((ms.budget / 2) * 100) / 100;
-        const release = this.ledger.releaseMilestone({
-          milestoneId: ms.id,
-          taskId: task.id,
-          clientId: task.clientId,
-          workerId: ms.workerId,
-          amount: half,
-          description: `Dispute split — worker's share of ${ms.title}`,
-        });
-        const refund = this.ledger.refundToClient({
-          taskId: task.id,
-          clientId: task.clientId,
-          amount: Math.round((ms.budget - half) * 100) / 100,
-          reason: `Dispute split — client's share of ${ms.title}`,
-        });
-        settlement = { release, refund };
-        this.milestonesService.update(dispute.milestoneId, { status: 'completed' });
-        this.milestonesService.checkTaskCompletion(dispute.taskId);
-      }
+    const verdict = dto.verdict as DisputeVerdict;
+    if (dispute.status === 'resolved') {
+      if (dispute.verdict === verdict) return { ...dispute, replayed: true };
+      throw new ConflictException(
+        `This dispute was already resolved as ${dispute.verdict}; that verdict cannot be replaced.`,
+      );
     }
 
-    return { ...dispute, settlement };
+    const resolved = this.uow.run([DisputesRepository, AuditRequestsRepository, ...SETTLEMENT_STORES], () => {
+      const settlement = dispute.milestoneId
+        ? this.settleMilestone(dispute, verdict)
+        : null;
+      this.closeUnfundedEngagement(dispute.auditRequestId);
+      return {
+        ...this.disputesRepository.update(id, {
+          status: 'resolved',
+          verdict,
+          resolution: dto.resolution,
+          resolvedAt: new Date().toISOString().slice(0, 10),
+          settlement,
+        }),
+        replayed: false,
+      };
+    });
+    // A verdict may have been the last thing a pending termination waited for.
+    this.termination.reevaluateAfterSettlement(dispute.taskId);
+    return resolved;
+  }
+
+  /**
+   * A verdict ends the arbitration. An engagement whose fee was never funded
+   * has nothing left to do and is closed; a funded one stays open so the
+   * reviewer can file their report and be paid from audit escrow.
+   */
+  private closeUnfundedEngagement(engagementId?: string) {
+    if (!engagementId) return;
+    const engagement = this.engagements.findById(engagementId);
+    if (engagement && [...NEGOTIABLE, AUDIT_STATUS.AGREED].includes(engagement.status)) {
+      this.engagements.update(engagementId, { status: AUDIT_STATUS.CANCELLED });
+    }
+  }
+
+  /** Applies a verdict to the disputed milestone. Callers must hold a unit of work. */
+  private settleMilestone(dispute: any, verdict: DisputeVerdict) {
+    const ms = this.milestonesService.findById(dispute.milestoneId);
+    const task = this.tasksService.findById(dispute.taskId);
+    if (ms.taskId !== task.id) {
+      throw new ConflictException(
+        'The disputed milestone does not belong to the disputed project.',
+      );
+    }
+    if (['completed', 'cancelled'].includes(ms.status)) {
+      throw new ConflictException(
+        `The disputed milestone is already ${ms.status}; there is nothing to settle.`,
+      );
+    }
+    const parties = { taskId: task.id, clientId: task.clientId };
+
+    if (verdict === 'client-favour') {
+      // Funded rework: nothing is refunded; the worker revises and resubmits.
+      this.milestonesService.markRevisionNeeded(ms.id);
+      return { kind: 'funded-rework', held: ms.budget };
+    }
+
+    if (verdict === 'worker-favour') {
+      const release = this.ledger.releaseMilestone({
+        ...parties,
+        milestoneId: ms.id,
+        workerId: ms.workerId!,
+        amount: ms.budget,
+        description: `Dispute resolved in worker's favour — ${ms.title}`,
+      });
+      this.milestonesService.markCompleted(ms.id);
+      this.milestonesService.rollUpTaskProgress(task.id);
+      return { kind: 'paid', release };
+    }
+
+    const shares = splitInHalf(toPaise(ms.budget));
+    const release =
+      shares.worker > 0
+        ? this.ledger.releaseMilestone({
+            ...parties,
+            milestoneId: ms.id,
+            workerId: ms.workerId!,
+            amount: fromPaise(shares.worker),
+            description: `Dispute split — worker's share of ${ms.title}`,
+          })
+        : null;
+    const refund =
+      shares.client > 0
+        ? this.ledger.refundToClient({
+            ...parties,
+            amount: fromPaise(shares.client),
+            reason: `Dispute split — client's share of ${ms.title}`,
+          })
+        : null;
+    this.milestonesService.markCompleted(ms.id);
+    this.milestonesService.rollUpTaskProgress(task.id);
+    return { kind: 'split', release, refund };
   }
 
   resetToSeed() {

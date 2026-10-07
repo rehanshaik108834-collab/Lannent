@@ -17,7 +17,11 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "build:all": "cross-env NODE_ENV=production VITE_API_URL=/api npm --prefix ../front-end-react run build && npm run build",
+    "lint:check": "eslint \"{src,apps,libs,test}/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
+    "lint:foundation": "eslint \"src/modules/*/*.types.ts\" \"src/modules/*/*.data.module.ts\" \"src/modules/*/*.core.module.ts\" \"src/modules/operations/**/*.ts\" \"src/http/**/*.ts\" \"src/common/security/bearer-token*.ts\" src/common/guards/role.guard.ts src/modules/users/account-deletion.guard.ts src/main.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
@@ -71,12 +75,25 @@
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
+      "^.+\\.[tj]s$": [
+        "ts-jest",
+        {
+          "tsconfig": {
+            "module": "CommonJS",
+            "moduleResolution": "Node",
+            "resolvePackageJsonExports": false,
+            "allowJs": true
+          }
+        }
+      ]
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],
     "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "transformIgnorePatterns": [
+      "node_modules/(?!@nestjs/jwt/)"
+    ]
   }
 }

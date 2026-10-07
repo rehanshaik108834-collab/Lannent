@@ -1,32 +1,32 @@
-import { Injectable, Inject, forwardRef } from '@nestjs/common';
-import { UsersService } from '../users/users.service';
-import { TasksService } from '../tasks/tasks.service';
-import { MilestonesService } from '../milestones/milestones.service';
-import { ProposalsService } from '../proposals/proposals.service';
-import { AuditRequestsService } from '../audit-requests/audit-requests.service';
-import { AuditReportsService } from '../audit-reports/audit-reports.service';
-import { DisputesService } from '../disputes/disputes.service';
-import { TransactionsService } from '../transactions/transactions.service';
-import { ExpertApplicationsService } from '../expert-applications/expert-applications.service';
-import { NotificationsService } from '../notifications/notifications.service';
+import { Injectable } from '@nestjs/common';
+import { UsersRepository } from '../users/users.repository';
+import { TasksRepository } from '../tasks/tasks.repository';
+import { MilestonesRepository } from '../milestones/milestones.repository';
+import { ProposalsRepository } from '../proposals/proposals.repository';
+import { AuditRequestsRepository } from '../audit-requests/audit-requests.repository';
+import { AuditReportsRepository } from '../audit-reports/audit-reports.repository';
+import { DisputesRepository } from '../disputes/disputes.repository';
+import { TransactionsRepository } from '../transactions/transactions.repository';
+import { ExpertApplicationsRepository } from '../expert-applications/expert-applications.repository';
+import { NotificationsRepository } from '../notifications/notifications.repository';
 import { LedgerService } from '../ledger/ledger.service';
 import { FilesService } from '../files/files.service';
 
 @Injectable()
 export class SeedService {
   constructor(
-    @Inject(forwardRef(() => UsersService)) private usersService: UsersService,
-    @Inject(forwardRef(() => TasksService)) private tasksService: TasksService,
-    @Inject(forwardRef(() => MilestonesService)) private milestonesService: MilestonesService,
-    @Inject(forwardRef(() => ProposalsService)) private proposalsService: ProposalsService,
-    @Inject(forwardRef(() => AuditRequestsService)) private auditRequestsService: AuditRequestsService,
-    @Inject(forwardRef(() => AuditReportsService)) private auditReportsService: AuditReportsService,
-    @Inject(forwardRef(() => DisputesService)) private disputesService: DisputesService,
-    @Inject(forwardRef(() => TransactionsService)) private transactionsService: TransactionsService,
-    @Inject(forwardRef(() => ExpertApplicationsService)) private expertApplicationsService: ExpertApplicationsService,
-    @Inject(forwardRef(() => NotificationsService)) private notificationsService: NotificationsService,
-    @Inject(forwardRef(() => LedgerService)) private ledgerService: LedgerService,
-    @Inject(forwardRef(() => FilesService)) private filesService: FilesService,
+    private usersService: UsersRepository,
+    private tasksService: TasksRepository,
+    private milestonesService: MilestonesRepository,
+    private proposalsService: ProposalsRepository,
+    private auditRequestsService: AuditRequestsRepository,
+    private auditReportsService: AuditReportsRepository,
+    private disputesService: DisputesRepository,
+    private transactionsService: TransactionsRepository,
+    private expertApplicationsService: ExpertApplicationsRepository,
+    private notificationsService: NotificationsRepository,
+    private ledgerService: LedgerService,
+    private filesService: FilesService,
   ) {}
 
   resetAll() {

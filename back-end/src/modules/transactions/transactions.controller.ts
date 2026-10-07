@@ -1,9 +1,10 @@
-import { Controller, Get, Post, Body, Query, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiHeader, ApiQuery } from '@nestjs/swagger';
+import { Controller, Get, Query, UseGuards, ForbiddenException } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { TransactionsService } from './transactions.service';
-import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { RoleGuard } from '../../common/guards/role.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { canViewAnyRecord } from '../../common/guards/viewer.util';
+import { CurrentActor } from '../../common/decorators/current-actor.decorator';
+import type { Actor } from '../../common/decorators/current-actor.decorator';
 
 @ApiTags('Transactions')
 @Controller('transactions')
@@ -12,17 +13,18 @@ export class TransactionsController {
   constructor(private readonly transactionsService: TransactionsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Get all transactions (supports ?userId= filter)' })
+  @ApiOperation({
+    summary: 'Your transaction history (oversight roles may pass ?userId= or omit it for all)',
+  })
   @ApiQuery({ name: 'userId', required: false })
-  findAll(@Query('userId') userId?: string) {
-    return this.transactionsService.findAll({ userId });
+  findAll(@CurrentActor() actor: Actor, @Query('userId') userId?: string) {
+    if (canViewAnyRecord(actor.role)) return this.transactionsService.findAll({ userId });
+    if (userId && userId !== actor.id) {
+      throw new ForbiddenException('You can only read your own transaction history.');
+    }
+    return this.transactionsService.findAll({ userId: actor.id });
   }
 
-  @Post()
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
-  @Roles('client', 'superuser', 'worker')
-  @ApiOperation({ summary: 'Create a transaction' })
-  create(@Body() dto: CreateTransactionDto) {
-    return this.transactionsService.create(dto);
-  }
+  // There is deliberately no POST. Transaction rows are written only by
+  // LedgerService, alongside the money movement they record.
 }

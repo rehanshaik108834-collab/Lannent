@@ -1,0 +1,75 @@
+.thread {
+  display: grid;
+  gap: 12px;
+}
+.messages {
+  display: grid;
+  gap: 10px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.messages p {
+  margin: 4px 0 0;
+  color: inherit;
+}
+.mine,
+.theirs {
+  max-width: 85%;
+  padding: 10px 14px;
+  border-radius: 12px;
+}
+.mine {
+  justify-self: end;
+  background: #e8eefc;
+}
+.theirs {
+  justify-self: start;
+  background: var(--secondary);
+}
+.author {
+  font-size: 12px;
+  color: var(--muted);
+}
+.composer {
+  display: flex;
+  gap: 8px;
+}
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.conversations {
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.conversations button {
+  width: 100%;
+  text-align: left;
+  display: grid;
+  gap: 2px;
+}
+.selected {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+@media (max-width: 760px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,11 +1,13 @@
 import { Controller, Get, Post, Patch, Param, Body, Query, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiHeader, ApiQuery } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { ExpertApplicationsService } from './expert-applications.service';
 import { CreateExpertApplicationDto } from './dto/create-expert-application.dto';
 import { UpdateExpertApplicationStatusDto } from './dto/update-expert-application.dto';
 import { RoleGuard } from '../../common/guards/role.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { ROLES } from '../../common/constants/roles';
+import { CurrentActor } from '../../common/decorators/current-actor.decorator';
+import type { Actor } from '../../common/decorators/current-actor.decorator';
 
 @ApiTags('Expert Applications')
 @Controller('expert-applications')
@@ -26,7 +28,7 @@ export class ExpertApplicationsController {
   }
 
   @Get()
-  @ApiHeader({ name: 'role', required: true, description: 'Admin role required' })
+  @ApiBearerAuth()
   // Applications carry applicants' phone numbers, emails and chosen passwords.
   // This was unguarded, so anyone could read every applicant's details.
   @Roles(ROLES.INTAKE_ADMIN, ROLES.COMPLIANCE_ADMIN)
@@ -36,7 +38,7 @@ export class ExpertApplicationsController {
   }
 
   @Get(':id')
-  @ApiHeader({ name: 'role', required: true, description: 'Admin role required' })
+  @ApiBearerAuth()
   @Roles(ROLES.INTAKE_ADMIN, ROLES.COMPLIANCE_ADMIN)
   @ApiOperation({ summary: 'Get expert application by ID' })
   findOne(@Param('id') id: string) {
@@ -50,12 +52,19 @@ export class ExpertApplicationsController {
   }
 
   @Patch(':id/status')
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
+  @ApiBearerAuth()
   // Approving creates the reviewer's account — the intake desk's decision
   // alone. Compliance reads applications; it does not decide them.
   @Roles(ROLES.INTAKE_ADMIN)
-  @ApiOperation({ summary: 'Approve or reject expert application (auto-creates user on approval)' })
-  updateStatus(@Param('id') id: string, @Body() dto: UpdateExpertApplicationStatusDto) {
-    return this.expertApplicationsService.updateStatus(id, dto);
+  @ApiOperation({
+    summary: 'Approve or reject a pending application (intake)',
+    description: "Approval creates the expert account with the applicant's chosen password, atomically.",
+  })
+  updateStatus(
+    @Param('id') id: string,
+    @Body() dto: UpdateExpertApplicationStatusDto,
+    @CurrentActor() actor: Actor,
+  ) {
+    return this.expertApplicationsService.updateStatus(id, dto, actor);
   }
 }

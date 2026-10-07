@@ -1,20 +1,28 @@
-import { IsString, IsOptional, ValidateNested } from 'class-validator';
+import { IsEmail, IsString, IsOptional, Matches, MaxLength, MinLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { FileRefDto } from '../../milestones/dto/update-milestone.dto';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateExpertApplicationDto {
   @ApiProperty({ example: 'Dr. Jane Smith' })
-  @IsString()
+  @IsString() @MinLength(2) @MaxLength(120)
   name: string;
 
   @ApiProperty({ example: 'jane@gmail.com' })
-  @IsString()
+  @IsEmail()
   email: string;
 
-  @ApiPropertyOptional({ example: 'Expert@123' })
-  @IsOptional() @IsString()
-  password?: string;
+  /**
+   * The password the expert will sign in with once approved. Required: there
+   * is no default password for approved applicants.
+   */
+  @ApiProperty({ example: 'Str0ng!Passw0rd' })
+  @IsString()
+  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*]).{8,128}$/, {
+    message:
+      'password must be 8+ characters with an uppercase letter, a lowercase letter, a number and a special character (!@#$%^&*).',
+  })
+  password: string;
 
   @ApiPropertyOptional({ example: '9876543210' })
   @IsOptional() @IsString()

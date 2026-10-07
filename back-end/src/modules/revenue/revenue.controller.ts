@@ -1,5 +1,5 @@
 import { Controller, Get, Patch, Body, Query, Param, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiHeader, ApiQuery } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { RevenueService } from './revenue.service';
 import { UpdateFeeConfigDto } from './dto/update-fee-config.dto';
 import { RoleGuard } from '../../common/guards/role.guard';
@@ -13,7 +13,7 @@ import { ROLES } from '../../common/constants/roles';
 @ApiTags('Revenue')
 @Controller('revenue')
 @UseGuards(RoleGuard)
-@ApiHeader({ name: 'role', required: true, description: 'Admin role required' })
+@ApiBearerAuth()
 export class RevenueController {
   constructor(private readonly revenue: RevenueService) {}
 

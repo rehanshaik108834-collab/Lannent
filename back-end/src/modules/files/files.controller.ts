@@ -6,14 +6,13 @@ import {
   Param,
   Body,
   Res,
-  Headers,
   UploadedFile,
   UseInterceptors,
   UseGuards,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
-import { ApiTags, ApiOperation, ApiHeader, ApiConsumes, ApiBody } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { createReadStream } from 'node:fs';
 import { Throttle } from '@nestjs/throttler';
 import { FilesService } from './files.service';
@@ -21,6 +20,8 @@ import { uploadOptions } from './upload.config';
 import { RoleGuard } from '../../common/guards/role.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { ROLES } from '../../common/constants/roles';
+import { CurrentActor } from '../../common/decorators/current-actor.decorator';
+import type { Actor } from '../../common/decorators/current-actor.decorator';
 
 @ApiTags('Files')
 @Controller('files')
@@ -29,7 +30,7 @@ export class FilesController {
   constructor(private readonly filesService: FilesService) {}
 
   @Post()
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
+  @ApiBearerAuth()
   @Roles(ROLES.CLIENT, ROLES.WORKER, ROLES.EXPERT, ROLES.SUPERUSER, ROLES.REVENUE_ADMIN, ROLES.INTAKE_ADMIN, ROLES.COMPLIANCE_ADMIN)
   @ApiConsumes('multipart/form-data')
   @ApiOperation({ summary: 'Upload a file and get back the reference to store' })
@@ -48,10 +49,9 @@ export class FilesController {
   upload(
     @UploadedFile() file: any,
     @Body() body: { taskId?: string; milestoneId?: string; purpose?: string },
-    @Headers('user-id') userId: string,
-    @Headers('role') role: string,
+    @CurrentActor() actor: Actor,
   ) {
-    return this.filesService.create(file, { id: userId, role }, body);
+    return this.filesService.create(file, actor, body);
   }
 
   /**
@@ -77,22 +77,21 @@ export class FilesController {
   }
 
   @Get(':id/meta')
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Get a file reference without downloading it' })
-  meta(@Param('id') id: string, @Headers('user-id') userId: string, @Headers('role') role: string) {
-    return this.filesService.meta(id, { id: userId, role });
+  meta(@Param('id') id: string, @CurrentActor() actor: Actor) {
+    return this.filesService.meta(id, actor);
   }
 
   @Get(':id')
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Download a file (scoped to the people on the project)' })
   download(
     @Param('id') id: string,
-    @Headers('user-id') userId: string,
-    @Headers('role') role: string,
+    @CurrentActor() actor: Actor,
     @Res() res: Response,
   ) {
-    const { path, record } = this.filesService.pathFor(id, { id: userId, role });
+    const { path, record } = this.filesService.pathFor(id, actor);
 
     // `attachment` and nosniff together: whatever the file claims to be, the
     // browser saves it rather than rendering it on this origin. An uploaded
@@ -108,10 +107,10 @@ export class FilesController {
   }
 
   @Delete(':id')
-  @ApiHeader({ name: 'role', required: true, description: 'User role required' })
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Delete a file (uploader or staff only)' })
-  remove(@Param('id') id: string, @Headers('user-id') userId: string, @Headers('role') role: string) {
-    return this.filesService.remove(id, { id: userId, role });
+  remove(@Param('id') id: string, @CurrentActor() actor: Actor) {
+    return this.filesService.remove(id, actor);
   }
 }
 

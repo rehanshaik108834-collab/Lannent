@@ -14,9 +14,10 @@ export class CreateAuditRequestDto {
   @IsOptional() @IsString()
   workerId?: string;
 
-  @ApiProperty({ example: 'u1' })
-  @IsString()
-  clientId: string;
+  /** Optional and redundant: the client is the signed-in account. A mismatch is rejected. */
+  @ApiPropertyOptional({ example: 'u1' })
+  @IsOptional() @IsString()
+  clientId?: string;
 
   @ApiPropertyOptional({ example: 'u3' })
   @IsOptional() @IsString()

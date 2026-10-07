@@ -1,3 +1,4 @@
+import type { ExpertApplicationRecord } from './expert-applications.types';
 import { Injectable } from '@nestjs/common';
 import { SEED_EXPERT_APPLICATIONS } from '../seed/seed.data';
 
@@ -9,34 +10,39 @@ import { SEED_EXPERT_APPLICATIONS } from '../seed/seed.data';
  */
 @Injectable()
 export class ExpertApplicationsRepository {
-  private applications: any[] = JSON.parse(JSON.stringify(SEED_EXPERT_APPLICATIONS));
+  private applications: ExpertApplicationRecord[] = structuredClone(
+    SEED_EXPERT_APPLICATIONS,
+  );
   private counter = 100;
 
   generateId(): string {
-    return 'ea_' + Date.now() + '_' + (this.counter++);
+    return 'ea_' + Date.now() + '_' + this.counter++;
   }
 
-  findAll(): any[] {
+  findAll(): ExpertApplicationRecord[] {
     return this.applications;
   }
 
-  findById(id: string): any | null {
-    return this.applications.find(a => a.id === id) || null;
+  findById(id: string): ExpertApplicationRecord | null {
+    return this.applications.find((a) => a.id === id) || null;
   }
 
-  insert(application: any): any {
+  insert(application: ExpertApplicationRecord): ExpertApplicationRecord {
     this.applications.push(application);
     return application;
   }
 
-  update(id: string, partial: any): any | null {
-    const app = this.applications.find(a => a.id === id);
+  update(
+    id: string,
+    partial: Partial<ExpertApplicationRecord>,
+  ): ExpertApplicationRecord | null {
+    const app = this.applications.find((a) => a.id === id);
     if (!app) return null;
     Object.assign(app, partial);
     return app;
   }
 
   resetToSeed(): void {
-    this.applications = JSON.parse(JSON.stringify(SEED_EXPERT_APPLICATIONS));
+    this.applications = structuredClone(SEED_EXPERT_APPLICATIONS);
   }
 }

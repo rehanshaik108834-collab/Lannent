@@ -1,6 +1,12 @@
-import { Module, NestModule, MiddlewareConsumer, RequestMethod } from '@nestjs/common';
+import {
+  Module,
+  NestModule,
+  MiddlewareConsumer,
+  RequestMethod,
+} from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { OperationsModule } from './modules/operations/operations.module';
 import { UsersModule } from './modules/users/users.module';
 import { TasksModule } from './modules/tasks/tasks.module';
 import { MilestonesModule } from './modules/milestones/milestones.module';
@@ -38,10 +44,15 @@ import { LoggingModule } from './common/logging/logging.module';
     // control: it is counted per IP, so everyone behind one NAT shares it, and
     // each dashboard fires eleven calls on load.
     ThrottlerModule.forRoot([
-      { name: 'default', ttl: 60_000, limit: Number(process.env.RATE_LIMIT_PER_MIN) || 2000 },
+      {
+        name: 'default',
+        ttl: 60_000,
+        limit: Number(process.env.RATE_LIMIT_PER_MIN) || 2000,
+      },
     ]),
     LoggingModule,
     UsersModule,
+    OperationsModule,
     TasksModule,
     MilestonesModule,
     ProposalsModule,

@@ -8,9 +8,10 @@ import {
   IsUrl,
   MaxLength,
   ValidateNested,
+  IsNotEmpty,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class UpdateMilestoneDto extends PartialType(CreateMilestoneDto) {
   @ApiPropertyOptional({ example: 'in-progress', enum: ['pending', 'in-progress', 'submitted', 'review', 'completed', 'approved', 'disputed', 'audit-passed', 'revision-needed'] })
@@ -102,4 +103,13 @@ export class SubmitDeliverableDto {
   @ValidateNested()
   @Type(() => DeliverableDto)
   deliverable?: DeliverableDto;
+}
+
+/** `POST /milestones/:id/request-revision` */
+export class RequestRevisionDto {
+  @ApiProperty({ example: 'The checkout total ignores the discount code.' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(2000)
+  reason: string;
 }

@@ -1,10 +1,9 @@
 import { Test } from '@nestjs/testing';
 import { BadRequestException } from '@nestjs/common';
+import { LedgerCoreModule } from './ledger.core.module';
 import { LedgerService } from './ledger.service';
 import { LoggingModule } from '../../common/logging/logging.module';
 import { LedgerRepository } from './ledger.repository';
-import { UsersModule } from '../users/users.module';
-import { TransactionsModule } from '../transactions/transactions.module';
 import { UsersService } from '../users/users.service';
 import { TransactionsService } from '../transactions/transactions.service';
 import { round2 } from './fee-config';
@@ -29,8 +28,7 @@ describe('LedgerService', () => {
     const mod = await Test.createTestingModule({
       // LoggingModule is @Global, so importing it here registers AppLoggerService
       // for LedgerModule too — the same way AppModule does it at runtime.
-      imports: [LoggingModule, UsersModule, TransactionsModule],
-      providers: [LedgerRepository, LedgerService],
+      imports: [LoggingModule, LedgerCoreModule],
     }).compile();
 
     ledger = mod.get(LedgerService);
@@ -44,10 +42,15 @@ describe('LedgerService', () => {
   });
 
   const walletTotal = () =>
-    round2(users.findAll().reduce((a: number, u: any) => a + (u.walletBalance || 0), 0));
+    round2(
+      users
+        .findAll()
+        .reduce((a: number, u: any) => a + (u.walletBalance || 0), 0),
+    );
 
   /** Everything the platform is holding or has kept, plus everyone's wallets. */
-  const systemTotal = () => round2(walletTotal() + ledger.totalHeld() + ledger.totalRevenue());
+  const systemTotal = () =>
+    round2(walletTotal() + ledger.totalHeld() + ledger.totalRevenue());
 
   describe('the books balance', () => {
     it('conserves value across a full project lifecycle', () => {
@@ -67,7 +70,11 @@ describe('LedgerService', () => {
       expect(systemTotal()).toBe(afterDeposit);
 
       ledger.releaseMilestone({
-        milestoneId: 'm13', taskId: 't3', clientId: 'u1', workerId: 'u5', amount: 500,
+        milestoneId: 'm13',
+        taskId: 't3',
+        clientId: 'u1',
+        workerId: 'u5',
+        amount: 500,
       });
       expect(systemTotal()).toBe(afterDeposit);
 
@@ -84,7 +91,11 @@ describe('LedgerService', () => {
       ledger.deposit('u1', 1000);
       ledger.fundProjectEscrow('t3', 'u1', 1000, 'test');
       ledger.releaseMilestone({
-        milestoneId: 'm13', taskId: 't3', clientId: 'u1', workerId: 'u5', amount: 400,
+        milestoneId: 'm13',
+        taskId: 't3',
+        clientId: 'u1',
+        workerId: 'u5',
+        amount: 400,
       });
       const kinds = ledger.getRevenue().map((r) => r.feeType);
       expect(kinds).toContain('deposit-processing');
@@ -100,7 +111,11 @@ describe('LedgerService', () => {
       ledger.fundProjectEscrow('t3', 'u1', 1200, 'test');
       expect(() =>
         ledger.releaseMilestone({
-          milestoneId: 'm13', taskId: 't3', clientId: 'u1', workerId: 'u5', amount: 5000,
+          milestoneId: 'm13',
+          taskId: 't3',
+          clientId: 'u1',
+          workerId: 'u5',
+          amount: 5000,
         }),
       ).toThrow(BadRequestException);
       expect(ledger.getEscrow('t3').projectHeld).toBe(1200);
@@ -115,7 +130,9 @@ describe('LedgerService', () => {
 
     it('refuses to fund escrow the client cannot afford', () => {
       const before = users.findById('u8').walletBalance;
-      expect(() => ledger.fundProjectEscrow('t5', 'u8', 100000, 'test')).toThrow(BadRequestException);
+      expect(() =>
+        ledger.fundProjectEscrow('t5', 'u8', 100000, 'test'),
+      ).toThrow(BadRequestException);
       expect(users.findById('u8').walletBalance).toBe(before);
       expect(ledger.getEscrow('t5').projectHeld).toBe(0);
     });
@@ -125,12 +142,20 @@ describe('LedgerService', () => {
     it('pays a milestone once even if approved twice', () => {
       ledger.fundProjectEscrow('t3', 'u1', 1200, 'test');
       const first = ledger.releaseMilestone({
-        milestoneId: 'm13', taskId: 't3', clientId: 'u1', workerId: 'u5', amount: 500,
+        milestoneId: 'm13',
+        taskId: 't3',
+        clientId: 'u1',
+        workerId: 'u5',
+        amount: 500,
       });
       const balanceAfterFirst = users.findById('u5').walletBalance;
 
       const second = ledger.releaseMilestone({
-        milestoneId: 'm13', taskId: 't3', clientId: 'u1', workerId: 'u5', amount: 500,
+        milestoneId: 'm13',
+        taskId: 't3',
+        clientId: 'u1',
+        workerId: 'u5',
+        amount: 500,
       });
 
       expect(first.alreadyReleased).toBe(false);
@@ -141,9 +166,19 @@ describe('LedgerService', () => {
 
     it('pays an expert once even if the report is submitted twice', () => {
       ledger.fundAuditEscrow('t3', 'u1', 400);
-      const a = ledger.releaseAuditFee({ auditRequestId: 'ar9', taskId: 't3', expertId: 'u3', amount: 400 });
+      const a = ledger.releaseAuditFee({
+        auditRequestId: 'ar9',
+        taskId: 't3',
+        expertId: 'u3',
+        amount: 400,
+      });
       const balance = users.findById('u3').walletBalance;
-      const b = ledger.releaseAuditFee({ auditRequestId: 'ar9', taskId: 't3', expertId: 'u3', amount: 400 });
+      const b = ledger.releaseAuditFee({
+        auditRequestId: 'ar9',
+        taskId: 't3',
+        expertId: 'u3',
+        amount: 400,
+      });
 
       expect(a.alreadyPaid).toBe(false);
       expect(b.alreadyPaid).toBe(true);
@@ -156,8 +191,8 @@ describe('LedgerService', () => {
       const before = users.findById('u1').walletBalance;
       const r = ledger.fundProjectEscrow('t3', 'u1', 2500, 'test');
 
-      expect(r.marketplace).toBe(125);   // 5%
-      expect(r.initiation).toBe(9.99);   // $2,000–$10,000 band
+      expect(r.marketplace).toBe(125); // 5%
+      expect(r.initiation).toBe(9.99); // $2,000–$10,000 band
       expect(r.totalCharged).toBe(2634.99);
       expect(users.findById('u1').walletBalance).toBe(round2(before - 2634.99));
       expect(ledger.getEscrow('t3').projectHeld).toBe(2500); // only the budget is held
@@ -168,7 +203,11 @@ describe('LedgerService', () => {
       expect(ledger.getBillings('u1', 'u5')).toBe(1800);
       ledger.fundProjectEscrow('t3', 'u1', 1200, 'test');
       const r = ledger.releaseMilestone({
-        milestoneId: 'm13', taskId: 't3', clientId: 'u1', workerId: 'u5', amount: 500,
+        milestoneId: 'm13',
+        taskId: 't3',
+        clientId: 'u1',
+        workerId: 'u5',
+        amount: 500,
       });
       expect(r.rate).toBe(10);
       expect(r.fee).toBe(50);
@@ -178,7 +217,11 @@ describe('LedgerService', () => {
       expect(ledger.getBillings('u8', 'u2')).toBe(0);
       ledger.fundProjectEscrow('t5', 'u8', 400, 'test');
       const fresh = ledger.releaseMilestone({
-        milestoneId: 'm16', taskId: 't5', clientId: 'u8', workerId: 'u2', amount: 400,
+        milestoneId: 'm16',
+        taskId: 't5',
+        clientId: 'u8',
+        workerId: 'u2',
+        amount: 400,
       });
       expect(fresh.rate).toBe(20);
       expect(fresh.net).toBe(320);
@@ -187,7 +230,12 @@ describe('LedgerService', () => {
     it('takes 10% commission from the expert payout', () => {
       ledger.fundAuditEscrow('t3', 'u1', 300);
       const before = users.findById('u3').walletBalance;
-      const r = ledger.releaseAuditFee({ auditRequestId: 'ar9', taskId: 't3', expertId: 'u3', amount: 300 });
+      const r = ledger.releaseAuditFee({
+        auditRequestId: 'ar9',
+        taskId: 't3',
+        expertId: 'u3',
+        amount: 300,
+      });
       expect(r.fee).toBe(30);
       expect(r.net).toBe(270);
       expect(users.findById('u3').walletBalance).toBe(round2(before + 270));

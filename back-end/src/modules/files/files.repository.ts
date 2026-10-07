@@ -1,3 +1,4 @@
+import type { FileRecord } from './files.types';
 import { Injectable } from '@nestjs/common';
 
 /**
@@ -12,45 +13,46 @@ import { Injectable } from '@nestjs/common';
  */
 @Injectable()
 export class FilesRepository {
-  private files: any[] = [];
+  private files: FileRecord[] = [];
   private counter = 100;
 
   generateId(): string {
     return 'f_' + Date.now() + '_' + this.counter++;
   }
 
-  findAll(query?: { uploadedBy?: string; taskId?: string }): any[] {
+  findAll(query?: { uploadedBy?: string; taskId?: string }): FileRecord[] {
     let result = this.files;
-    if (query?.uploadedBy) result = result.filter(f => f.uploadedBy === query.uploadedBy);
-    if (query?.taskId) result = result.filter(f => f.taskId === query.taskId);
+    if (query?.uploadedBy)
+      result = result.filter((f) => f.uploadedBy === query.uploadedBy);
+    if (query?.taskId) result = result.filter((f) => f.taskId === query.taskId);
     return result;
   }
 
-  findById(id: string): any | null {
-    return this.files.find(f => f.id === id) || null;
+  findById(id: string): FileRecord | null {
+    return this.files.find((f) => f.id === id) || null;
   }
 
-  insert(file: any): any {
+  insert(file: FileRecord): FileRecord {
     this.files.push(file);
     return file;
   }
 
-  update(id: string, partial: any): any | null {
-    const idx = this.files.findIndex(f => f.id === id);
+  update(id: string, partial: Partial<FileRecord>): FileRecord | null {
+    const idx = this.files.findIndex((f) => f.id === id);
     if (idx === -1) return null;
     this.files[idx] = { ...this.files[idx], ...partial };
     return this.files[idx];
   }
 
-  remove(id: string): any | null {
-    const idx = this.files.findIndex(f => f.id === id);
+  remove(id: string): FileRecord | null {
+    const idx = this.files.findIndex((f) => f.id === id);
     if (idx === -1) return null;
     return this.files.splice(idx, 1)[0];
   }
 
   /** Every stored filename, so the service can spot files nothing points at. */
   storedNames(): string[] {
-    return this.files.map(f => f.storedName);
+    return this.files.map((f) => f.storedName);
   }
 
   resetToSeed(): void {

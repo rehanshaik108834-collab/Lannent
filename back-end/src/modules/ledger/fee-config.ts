@@ -4,12 +4,14 @@
  * Rates follow published 2026 marketplace pricing:
  *   - client marketplace fee + contract initiation fee ...... Upwork
  *   - worker service fee, tiered by lifetime billings ....... Upwork
- *   - card processing on deposit ............................ Stripe (2.9% + $0.30)
- *   - payout fee on withdrawal ............................. Stripe Connect (0.25% + $0.25)
+ *   - card processing on deposit ............................ Stripe (2.9% + ₹0.30)
+ *   - payout fee on withdrawal ............................. Stripe Connect (0.25% + ₹0.25)
  *
- * Every amount in the system is USD and rounded to cents at the point a fee is
- * computed, so a fee and its net never disagree by a floating-point crumb.
+ * Every amount is INR. Fixed fees and tier bounds keep their original numbers
+ * as nominal rupees (no currency conversion). Fees are computed in integer
+ * paise, so a fee and its net always add back to the gross exactly.
  */
+import { Paise, fromPaise, percentOf, toPaise } from '../../common/money/inr';
 
 export type FeeType =
   | 'deposit-processing'
@@ -83,7 +85,7 @@ export function resetFeeConfig(): void {
   FEE_CONFIG.contractInitiation.forEach((t, i) => { t.fee = restored.contractInitiation[i].fee; });
 }
 
-/** Rounds to whole cents. Every fee and net amount passes through this. */
+/** Rounds a rupee value to whole paise. For display totals; fees use the paise functions. */
 export function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
@@ -92,32 +94,61 @@ function pickTier(tiers: AmountTier[], amount: number): AmountTier {
   return tiers.find((t) => amount <= t.upTo) ?? tiers[tiers.length - 1];
 }
 
-export function depositFee(gross: number): number {
-  return round2(gross * (FEE_CONFIG.deposit.percent / 100) + FEE_CONFIG.deposit.fixed);
+// ── Fees in paise (used by the ledger) ──────────────────────────────────────
+
+export function depositFeePaise(gross: Paise): Paise {
+  return percentOf(gross, FEE_CONFIG.deposit.percent) + toPaise(FEE_CONFIG.deposit.fixed);
 }
 
-export function withdrawalFee(gross: number): number {
-  const raw = gross * (FEE_CONFIG.withdrawal.percent / 100) + FEE_CONFIG.withdrawal.fixed;
-  return round2(Math.max(raw, FEE_CONFIG.withdrawal.min));
+export function withdrawalFeePaise(gross: Paise): Paise {
+  const raw = percentOf(gross, FEE_CONFIG.withdrawal.percent) + toPaise(FEE_CONFIG.withdrawal.fixed);
+  return Math.max(raw, toPaise(FEE_CONFIG.withdrawal.min));
 }
 
-export function marketplaceFee(budget: number): number {
-  return round2(budget * (FEE_CONFIG.clientMarketplace.percent / 100));
+export function marketplaceFeePaise(budget: Paise): Paise {
+  return percentOf(budget, FEE_CONFIG.clientMarketplace.percent);
 }
 
-export function initiationFee(budget: number): number {
-  return round2(pickTier(FEE_CONFIG.contractInitiation, budget).fee ?? 0);
+/** The band is chosen by the budget in rupees, matching the configured bounds. */
+export function initiationFeePaise(budget: Paise): Paise {
+  return toPaise(pickTier(FEE_CONFIG.contractInitiation, fromPaise(budget)).fee ?? 0);
 }
 
-/** Percent rate a worker pays, given their prior lifetime billings with this client. */
+/** Percent rate a worker pays, given their prior lifetime billings (rupees) with this client. */
 export function workerServiceRate(lifetimeBillings: number): number {
   return pickTier(FEE_CONFIG.workerService, lifetimeBillings).percent ?? 0;
 }
 
+export function workerServiceFeePaise(amount: Paise, lifetimeBillings: number): Paise {
+  return percentOf(amount, workerServiceRate(lifetimeBillings));
+}
+
+export function expertServiceFeePaise(amount: Paise): Paise {
+  return percentOf(amount, FEE_CONFIG.expertService.percent);
+}
+
+// ── Rupee wrappers (public API compatibility) ───────────────────────────────
+
+export function depositFee(gross: number): number {
+  return fromPaise(depositFeePaise(toPaise(gross)));
+}
+
+export function withdrawalFee(gross: number): number {
+  return fromPaise(withdrawalFeePaise(toPaise(gross)));
+}
+
+export function marketplaceFee(budget: number): number {
+  return fromPaise(marketplaceFeePaise(toPaise(budget)));
+}
+
+export function initiationFee(budget: number): number {
+  return fromPaise(initiationFeePaise(toPaise(budget)));
+}
+
 export function workerServiceFee(amount: number, lifetimeBillings: number): number {
-  return round2(amount * (workerServiceRate(lifetimeBillings) / 100));
+  return fromPaise(workerServiceFeePaise(toPaise(amount), lifetimeBillings));
 }
 
 export function expertServiceFee(amount: number): number {
-  return round2(amount * (FEE_CONFIG.expertService.percent / 100));
+  return fromPaise(expertServiceFeePaise(toPaise(amount)));
 }

@@ -12,7 +12,7 @@ export interface AuditEvent {
   path: string | null;
   status: number | null;
   outcome: 'ok' | 'refused' | null;
-  detail: Record<string, any> | null;
+  detail: Record<string, unknown> | null;
 }
 
 /**
@@ -46,7 +46,10 @@ export class AuditRepository {
     if (this.events.length > AuditRepository.CAPACITY) {
       // Rolling off the oldest is a compromise, not a feature — say so out
       // loud rather than letting the trail silently lose its beginning.
-      const removed = this.events.splice(0, this.events.length - AuditRepository.CAPACITY);
+      const removed = this.events.splice(
+        0,
+        this.events.length - AuditRepository.CAPACITY,
+      );
       this.dropped += removed.length;
       this.logger.warn(
         `audit log is at capacity (${AuditRepository.CAPACITY}); dropped ${this.dropped} oldest event(s) so far`,
@@ -63,11 +66,13 @@ export class AuditRepository {
     to?: string;
   }): AuditEvent[] {
     let result = this.events;
-    if (query?.actorId) result = result.filter(e => e.actorId === query.actorId);
-    if (query?.actorRole) result = result.filter(e => e.actorRole === query.actorRole);
-    if (query?.kind) result = result.filter(e => e.kind === query.kind);
-    if (query?.from) result = result.filter(e => e.at >= query.from!);
-    if (query?.to) result = result.filter(e => e.at <= query.to!);
+    if (query?.actorId)
+      result = result.filter((e) => e.actorId === query.actorId);
+    if (query?.actorRole)
+      result = result.filter((e) => e.actorRole === query.actorRole);
+    if (query?.kind) result = result.filter((e) => e.kind === query.kind);
+    if (query?.from) result = result.filter((e) => e.at >= query.from!);
+    if (query?.to) result = result.filter((e) => e.at <= query.to!);
     return [...result].reverse();
   }
 
