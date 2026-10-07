@@ -6,11 +6,33 @@ import { Auth } from './lib/auth';
 import { go, setNavigator } from './lib/nav';
 import { ConfirmHost, ToastHost } from './components/Feedback';
 
-// One lazy component per original page: src/pages/<name>.jsx.
+// One code-split component per original page: src/pages/<name>.jsx.
+//
+// A page whose code is not loaded yet suspends, and React holds a suspended
+// screen for at least ~300ms: every first visit flashed blank. So after the
+// first page renders, every page's code is fetched in the background, and a
+// page that is already loaded renders directly instead of through lazy().
 const modules = import.meta.glob('./pages/*.jsx');
-const components = {};
+const loaded = {};
+const lazyComponents = {};
+const loaders = {};
 for (const [file, load] of Object.entries(modules)) {
-  components[file.slice('./pages/'.length, -'.jsx'.length)] = lazy(load);
+  const name = file.slice('./pages/'.length, -'.jsx'.length);
+  loaders[name] = () => load().then((m) => { loaded[name] = m.default; return m; });
+  lazyComponents[name] = lazy(loaders[name]);
+}
+
+let preloadStarted = false;
+function preloadAllPages() {
+  if (preloadStarted) return;
+  preloadStarted = true;
+  const run = () => {
+    for (const name of Object.keys(loaders)) {
+      if (!loaded[name]) loaders[name]().catch(() => { /* lazy() retries on visit */ });
+    }
+  };
+  if ('requestIdleCallback' in window) window.requestIdleCallback(run, { timeout: 2000 });
+  else setTimeout(run, 200);
 }
 
 /** URL → original page name. "/" and "/index.html" are the landing page. */
@@ -52,13 +74,20 @@ function PageInstance({ name }) {
     if (!entry.roles.includes(user.role)) return <Redirect to={'/pages/' + Auth.getDashboardUrl(user.role)} />;
   }
 
-  const Page = components[name];
+  const Page = loaded[name] || lazyComponents[name];
   if (!Page) return null;
   return (
     <Suspense fallback={null}>
       <Page />
+      <PreloadPages />
     </Suspense>
   );
+}
+
+/** Mounts once the first page has rendered, then fetches the other pages' code. */
+function PreloadPages() {
+  useEffect(() => { preloadAllPages(); }, []);
+  return null;
 }
 
 export default function App() {
