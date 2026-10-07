@@ -109,7 +109,7 @@ async function bootstrap() {
     },
     credentials: true,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    allowedHeaders: 'Content-Type, Accept, Authorization, X-Request-Id',
+    allowedHeaders: 'Content-Type, Accept, Authorization, X-Request-Id, role, user-id',
     // Without this the browser can see the response but not the id on it, so
     // a user reporting a problem has no reference to quote.
     exposedHeaders: 'X-Request-Id',
