@@ -28,7 +28,7 @@ export type TerminationStatus =
   | { state: 'finalized'; termination: TerminationSettlement; task: TaskRecord };
 
 /**
- * Ending a contract early (documentation/02-workflows-and-permissions.md#termination).
+ * Ending a contract early.
  *
  * 1. Either party requests termination with a reason. From then on no new
  *    work starts: no new submissions, revisions, milestones or hiring.

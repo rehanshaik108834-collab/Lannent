@@ -15,6 +15,7 @@ import { Actor } from '../../common/decorators/current-actor.decorator';
 import { UnitOfWork } from '../../common/unit-of-work/unit-of-work';
 import { AuditRequestsRepository } from '../audit-requests/audit-requests.repository';
 import { AUDIT_KIND } from '../audit-requests/audit-request.constants';
+import { NotificationsService } from '../notifications/notifications.service';
 
 /**
  * AuditReportsService — Business Logic Layer
@@ -25,6 +26,7 @@ import { AUDIT_KIND } from '../audit-requests/audit-request.constants';
 @Injectable()
 export class AuditReportsService {
   constructor(
+    private readonly notifier: NotificationsService,
     private readonly auditReportsRepository: AuditReportsRepository,
     private auditRequestsService: AuditRequestsService,
     private milestonesService: MilestonesService,
@@ -120,7 +122,7 @@ export class AuditReportsService {
     const milestoneId = this.reportedMilestone(engagement, dto.milestoneId);
     const fields = { ...dto, expertId: actor.id, milestoneId };
 
-    return this.uow.run(
+    const filed = this.uow.run(
       [AuditReportsRepository, AuditRequestsRepository, ...SETTLEMENT_STORES],
       () => {
         // Keyed on the milestone as well as the engagement: re-filing a report
@@ -158,6 +160,25 @@ export class AuditReportsService {
         return { ...report, payout };
       },
     );
+
+    const milestone =
+      (milestoneId && this.milestonesService.findById(milestoneId)?.title) ||
+      engagement.milestone ||
+      'Milestone';
+    const passed = dto.verdict === 'pass';
+    this.notifier.notify(
+      engagement.clientId,
+      'audit-complete',
+      `Audit ${passed ? 'passed' : 'failed'}: ${milestone}`,
+      `${engagement.project} · just now`,
+    );
+    this.notifier.notify(
+      engagement.workerId,
+      'audit-complete',
+      `Your milestone audit result: ${passed ? 'PASS ✓' : 'FAIL ✗'}`,
+      `${milestone} · just now`,
+    );
+    return filed;
   }
 
   /** The milestone a report covers, validated against its engagement. */

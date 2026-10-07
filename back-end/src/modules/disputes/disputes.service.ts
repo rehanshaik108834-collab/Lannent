@@ -28,6 +28,8 @@ import { UsersRepository } from '../users/users.repository';
 import { MilestonesRepository } from '../milestones/milestones.repository';
 import { AuditRequestsRepository } from '../audit-requests/audit-requests.repository';
 import { AUDIT_STATUS, NEGOTIABLE } from '../audit-requests/audit-request.constants';
+import { NotificationsService } from '../notifications/notifications.service';
+import { ROLES } from '../../common/constants/roles';
 
 export type DisputeVerdict = 'client-favour' | 'worker-favour' | 'split';
 
@@ -40,6 +42,7 @@ export type DisputeVerdict = 'client-favour' | 'worker-favour' | 'split';
 @Injectable()
 export class DisputesService {
   constructor(
+    private readonly notifier: NotificationsService,
     private readonly disputesRepository: DisputesRepository,
     private milestonesService: MilestonesService,
     private tasksService: TasksAccessService,
@@ -171,7 +174,7 @@ export class DisputesService {
       resolvedAt: null,
     };
 
-    return this.uow.run(
+    const created = this.uow.run(
       [DisputesRepository, MilestonesRepository, AuditRequestsRepository],
       () => {
         this.disputesRepository.insert(dispute);
@@ -206,6 +209,36 @@ export class DisputesService {
         }
         return this.disputesRepository.findById(dispute.id);
       },
+    );
+    this.notifyDisputeRaised(dispute);
+    return created;
+  }
+
+  /**
+   * The reviewer the raiser chose hears about the case (no other reviewer can
+   * open it), or every active reviewer when none was chosen; the other party
+   * hears that a dispute was raised against them.
+   */
+  private notifyDisputeRaised(dispute: any) {
+    const reviewers = dispute.expertId
+      ? [dispute.expertId]
+      : this.users
+          .findAll()
+          .filter((u) => u.role === ROLES.EXPERT && u.status === 'active')
+          .map((u) => u.id);
+    for (const id of reviewers) {
+      this.notifier.notify(
+        id,
+        'dispute',
+        `New dispute raised: ${dispute.project}`,
+        `${dispute.raisedByName} raised a dispute — ${dispute.reason}`,
+      );
+    }
+    this.notifier.notify(
+      dispute.againstId,
+      'dispute',
+      'A dispute has been raised against you',
+      `${dispute.project} — ${dispute.milestone}: ${dispute.reason}`,
     );
   }
 
@@ -266,6 +299,21 @@ export class DisputesService {
     });
     // A verdict may have been the last thing a pending termination waited for.
     this.termination.reevaluateAfterSettlement(dispute.taskId);
+
+    const label =
+      verdict === 'worker-favour'
+        ? 'in favour of the Worker'
+        : verdict === 'client-favour'
+          ? 'in favour of the Client'
+          : 'with a partial resolution';
+    for (const party of [dispute.raisedBy, dispute.againstId]) {
+      this.notifier.notify(
+        party,
+        'dispute-resolved',
+        `Dispute resolved: ${dispute.project}`,
+        `Expert verdict ${label} — ${dispute.milestone}`,
+      );
+    }
     return resolved;
   }
 

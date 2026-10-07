@@ -1031,11 +1031,15 @@ export const Store = (() => {
   // ─── NOTIFICATIONS ────────────────────────────────────────────────────────
   function getNotifications(userId) { return (_cache.notifications || []).filter(n => n.userId === userId); }
 
-  function addNotification(data) {
-    const result = _syncPost(`${API}/notifications`, data);
-    if (result) { _cache.notifications.push(result); return; }
-    _cache.notifications.push({ id: 'n_' + Date.now(), read: false, createdAt: new Date().toISOString().slice(0, 10), ...data });
-  }
+  /**
+   * Kept so pages can keep calling it, but it no longer sends anything. The
+   * server creates every notification itself when the action happens
+   * (proposal, invitation, message, dispute, deliverable, audit report,
+   * verdict, payment), and POST /notifications is retired so nobody can write
+   * into another user's inbox. The old local fallback only ever added the
+   * recipient's notification to the sender's own cache, where it was never shown.
+   */
+  function addNotification() {}
 
   function markNotificationsRead(userId) {
     _syncPatch(`${API}/notifications/${userId}/read-all`, {});

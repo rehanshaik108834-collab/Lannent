@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { NotificationsCoreModule } from '../notifications/notifications.core.module';
 import { AuditReportsService } from './audit-reports.service';
 import { AuditReportsDataModule } from './audit-reports.data.module';
 import { TasksAccessModule } from '../tasks/tasks-access.module';
@@ -9,6 +10,7 @@ import { UnitOfWork } from '../../common/unit-of-work/unit-of-work';
 /** Workflow composition. Imports leaf data and lower-level services only. */
 @Module({
   imports: [
+    NotificationsCoreModule,
     AuditReportsDataModule,
     TasksAccessModule,
     AuditRequestsCoreModule,

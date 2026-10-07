@@ -18,6 +18,7 @@ import { TasksAccessService } from '../tasks/tasks-access.service';
 import { TransactionsService } from '../transactions/transactions.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { MilestonesRepository } from '../milestones/milestones.repository';
+import { NotificationsService } from '../notifications/notifications.service';
 
 /**
  * ProposalsService — Business Logic Layer
@@ -28,6 +29,7 @@ import { MilestonesRepository } from '../milestones/milestones.repository';
 @Injectable()
 export class ProposalsService {
   constructor(
+    private readonly notifier: NotificationsService,
     private readonly proposalsRepository: ProposalsRepository,
     private tasksService: TasksAccessService,
     private transactionsService: TransactionsService,
@@ -127,7 +129,7 @@ export class ProposalsService {
       );
     }
 
-    return this.proposalsRepository.insert({
+    const created = this.proposalsRepository.insert({
       createdAt: new Date().toISOString().slice(0, 10),
       skills: dto.skills || worker.skills || [],
       ...dto,
@@ -142,6 +144,23 @@ export class ProposalsService {
       completedProjects: worker.completedProjects,
       location: worker.location,
     });
+
+    if (type === 'proposal') {
+      this.notifier.notify(
+        task.clientId,
+        'proposal',
+        `New proposal from ${worker.name || 'a worker'}`,
+        `${task.title} — Bid: ${dto.bidPrice ?? ''}, Timeline: ${dto.timeline ?? ''}`,
+      );
+    } else {
+      this.notifier.notify(
+        workerId,
+        'invitation',
+        'You have been invited to a project',
+        `${task.title || 'Project'} · just now`,
+      );
+    }
+    return created;
   }
 
   /**

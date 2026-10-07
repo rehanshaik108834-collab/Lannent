@@ -7,9 +7,9 @@ import { tmpdir } from 'node:os';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApi } from '../src/configure-api';
-import { configureFrontend } from '../src/http/frontend';
+import { configureReactFrontend } from '../src/http/static-frontend';
 
-describe('React serving boundaries (W6)', () => {
+describe('React app serving boundaries', () => {
   let app: NestExpressApplication;
   let root: string;
   beforeAll(async () => {
@@ -25,7 +25,7 @@ describe('React serving boundaries (W6)', () => {
     }).compile();
     app = fixture.createNestApplication<NestExpressApplication>();
     configureApi(app);
-    configureFrontend(app, root);
+    configureReactFrontend(app, root);
     SwaggerModule.setup(
       'api-docs',
       app,
@@ -40,20 +40,19 @@ describe('React serving boundaries (W6)', () => {
     await app?.close();
     rmSync(root, { recursive: true, force: true });
   });
-  it('serves deep links and old document links with document security headers', async () => {
+  it('serves the app shell at the original page URLs, never cached', async () => {
     for (const path of [
       '/',
-      '/client/projects',
+      '/index.html',
+      '/pages/client-dashboard.html',
       '/pages/review-deliverable.html?id=m6',
+      '/pages/client-dashboard',
     ]) {
       const result = await request(app.getHttpServer())
         .get(path)
         .accept('html')
         .expect(200);
       expect(result.text).toContain('React shell fixture');
-      expect(result.headers['content-security-policy']).toContain(
-        "script-src 'self'",
-      );
       expect(result.headers['cache-control']).toContain('no-store');
     }
   });
@@ -91,7 +90,11 @@ describe('React serving boundaries (W6)', () => {
       .expect(200);
     expect(docs.text).toContain('Swagger');
     await request(app.getHttpServer())
-      .post('/client/projects')
+      .post('/pages/client-dashboard.html')
+      .accept('html')
+      .expect(404);
+    await request(app.getHttpServer())
+      .get('/client/projects')
       .accept('html')
       .expect(404);
     await request(app.getHttpServer())
@@ -99,10 +102,8 @@ describe('React serving boundaries (W6)', () => {
       .accept('json')
       .expect(404);
   });
-  it('refuses a missing React build with actionable startup guidance', () => {
-    expect(() => configureFrontend(app, join(root, 'absent'))).toThrow(
-      'build:all',
-    );
+  it('reports a missing build so the server can fall back to the original HTML', () => {
+    expect(configureReactFrontend(app, join(root, 'absent'))).toBe(false);
   });
   it('retires legacy-only writes and refuses forged header identity', async () => {
     await request(app.getHttpServer())

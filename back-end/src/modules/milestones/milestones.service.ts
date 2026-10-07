@@ -314,6 +314,11 @@ export class MilestonesService {
     });
 
     this.handOverToAuditor(updated);
+    this.notifyAfterCommit(task.clientId, {
+      type: 'milestone-submitted',
+      text: 'New deliverable submitted',
+      subtext: `${ms.title || 'Milestone'} — ${task.title || 'Project'} · just now`,
+    });
 
     return updated;
   }

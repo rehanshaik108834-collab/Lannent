@@ -12,9 +12,8 @@ import helmet from 'helmet';
 import { Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
-import { configureFrontend } from './http/frontend';
 import {
-  configureClassicFrontend,
+  configureReactFrontend,
   configureStaticFrontend,
 } from './http/static-frontend';
 import { configureApi } from './configure-api';
@@ -50,8 +49,8 @@ async function bootstrap() {
   app.use(json({ limit: '1mb' }));
   app.use(urlencoded({ extended: true, limit: '1mb' }));
 
-  // API security headers apply globally. configureFrontend adds the document
-  // CSP to the React shell; Swagger and byte streams retain their own routes.
+  // API security headers apply globally. Swagger and byte streams keep their
+  // own routes.
   app.use(
     helmet({
       contentSecurityPolicy: false,
@@ -132,21 +131,16 @@ async function bootstrap() {
   });
 
   // Which UI is served at /:
-  //   default            front-end-classic (React port of the original UI);
+  //   default            front-end-react (React port of the original UI);
   //                      falls back to the original HTML if it is not built
   //   FRONTEND_UI=static the original HTML pages in front-end/
-  //   FRONTEND_UI=react  the redesigned front-end-react build
-  const mode = process.env.FRONTEND_UI;
   let uiName: string;
-  if (mode === 'react') {
-    configureFrontend(app);
-    uiName = 'redesigned React';
-  } else if (mode !== 'static' && configureClassicFrontend(app)) {
-    uiName = 'React (original design)';
+  if (process.env.FRONTEND_UI !== 'static' && configureReactFrontend(app)) {
+    uiName = 'React';
   } else {
-    if (mode !== 'static')
+    if (process.env.FRONTEND_UI !== 'static')
       new Logger('Frontend').warn(
-        'front-end-classic is not built (npm run build in front-end-classic/); serving the original HTML pages instead.',
+        'front-end-react is not built (npm run build in front-end-react/); serving the original HTML pages instead.',
       );
     configureStaticFrontend(app);
     uiName = 'original HTML';

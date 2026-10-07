@@ -12,6 +12,7 @@ import { ProposalsRepository } from '../proposals/proposals.repository';
 import { AuditRequestsRepository } from '../audit-requests/audit-requests.repository';
 import { canViewAnyRecord } from '../../common/guards/viewer.util';
 import type { Actor } from '../../common/decorators/current-actor.decorator';
+import { NotificationsService } from '../notifications/notifications.service';
 
 /**
  * Project conversations.
@@ -23,6 +24,7 @@ import type { Actor } from '../../common/decorators/current-actor.decorator';
 @Injectable()
 export class MessagesService {
   constructor(
+    private readonly notifier: NotificationsService,
     private readonly messagesRepository: MessagesRepository,
     private readonly users: UsersRepository,
     private readonly tasks: TasksRepository,
@@ -64,7 +66,7 @@ export class MessagesService {
     }
 
     const sender = this.users.findById(actor.id);
-    return this.messagesRepository.insert({
+    const message = this.messagesRepository.insert({
       content: dto.content,
       taskId: dto.taskId,
       receiverId: dto.receiverId,
@@ -75,6 +77,14 @@ export class MessagesService {
       senderAvatar: sender?.avatar,
       senderAvatarColor: sender?.avatarColor,
     });
+    const content = dto.content || '';
+    this.notifier.notify(
+      dto.receiverId,
+      'message',
+      `New message from ${sender?.name || 'Someone'}`,
+      content.length > 50 ? content.substring(0, 50) + '...' : content,
+    );
+    return message;
   }
 
   private participantsOf(taskId: string): Set<string> {
